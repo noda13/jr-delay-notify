@@ -205,6 +205,8 @@ export default {
       // Note: /check intentionally does not read or update the error-active state machine
       // (state:__error-active). Error dedup and one-shot alerts are managed by the scheduled
       // handler only. A manual /check during an outage will not suppress or trigger error alerts.
+      // Note: each /check call may trigger live LINE broadcasts — use sparingly to avoid
+      // exhausting the monthly free-tier broadcast quota (200 msgs/mo).
       const notifyOnRecovery = isRecoveryEnabled(env);
       const settled = await Promise.allSettled(
         DEFAULT_TARGETS.map((target) => processTarget(target, env, notifyOnRecovery)),
