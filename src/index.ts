@@ -42,7 +42,7 @@ async function processTarget(
 
   const newState: StoredState = {
     status: result.status,
-    ...(notified ? { notifiedAt: new Date().toISOString() } : previous?.notifiedAt ? { notifiedAt: previous.notifiedAt } : {}),
+    ...(notified ? { notifiedAt: new Date().toISOString() } : (result.status === STATUS.DISRUPTED && previous?.notifiedAt) ? { notifiedAt: previous.notifiedAt } : {}),
     description: result.description,
     // Known limitation: a pending disruption alert (pendingNotify=true) is intentionally cleared in two cases:
     // (a) Route recovers to NORMAL with NOTIFY_ON_RECOVERY=false: disruption resolved, late alert confuses users.
@@ -148,8 +148,9 @@ export default {
       // errorNotified stays as wasInError, and the KV error-active flag is never set.
       if (errorNotified) {
         // Note: concurrent scheduled invocations could both read wasInError=false and both send
-        // a notification before either write lands. KV has no compare-and-swap, so duplicate
-        // error broadcasts are possible under concurrent execution — accepted as a rare edge case.
+        // a notification before either write lands — accepted as a rare edge case (no CAS in KV).
+        // Note: if put fails below, the next failing cron tick will re-send the error alert
+        // (at-least-once delivery, consistent with per-target KV write failure behavior).
         await env.JR_STATE.put(errorStateKey, "1", { expirationTtl: 60 * 60 * 24 }).catch((e) => {
           console.error("Failed to persist error-active state to KV:", e);
         });
@@ -183,6 +184,9 @@ export default {
         return new Response("Forbidden", { status: 403 });
       }
 
+      // Note: /check intentionally does not read or update the error-active state machine
+      // (state:__error-active). Error dedup and one-shot alerts are managed by the scheduled
+      // handler only. A manual /check during an outage will not suppress or trigger error alerts.
       const notifyOnRecovery = isRecoveryEnabled(env);
       const settled = await Promise.allSettled(
         DEFAULT_TARGETS.map((target) => processTarget(target, env, notifyOnRecovery)),

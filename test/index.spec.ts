@@ -139,6 +139,18 @@ function makeLineApiResponse() {
 	};
 }
 
+function makeLineRateLimitResponse() {
+	return {
+		ok: false,
+		status: 429,
+		statusText: "Too Many Requests",
+		text: () =>
+			Promise.resolve(
+				JSON.stringify({ message: "Too many requests", status: 429 }),
+			),
+	};
+}
+
 // ---------------------------------------------------------------------------
 // scrapeTarget tests
 // ---------------------------------------------------------------------------
@@ -488,5 +500,83 @@ describe("fetch handler /check integration", () => {
 		expect(normalResult).toBeDefined();
 		expect(normalResult?.status).toBe(0);
 		expect(normalResult?.notified).toBe(false);
+	});
+
+	it("LINE 429 rate-limit: pendingNotify=true survives when LINE returns 429 (lineFailed stays false, pendingNotify remains true)", async () => {
+		// Pre-seed KV: hakodate-sapporo disrupted with pendingNotify=true (prior retry-pending state)
+		await env.JR_STATE.put(
+			"state:hakodate-sapporo",
+			JSON.stringify({
+				status: 1,
+				notifiedAt: "",
+				description: "遅延中",
+				pendingNotify: true,
+			}),
+		);
+		await env.JR_STATE.put(
+			"state:spo-airport",
+			JSON.stringify({
+				status: 0,
+				notifiedAt: "2024-01-01T00:00:00.000Z",
+				description: "Normal",
+			}),
+		);
+
+		// Mock: JR API still returns DISRUPTED; LINE API returns 429
+		const mockFetch = vi.fn().mockImplementation((url: string) => {
+			if (String(url).includes("jrhokkaido")) {
+				return Promise.resolve(
+					makeJrApiResponse({ hakochise: 1, airport: 0 }),
+				);
+			}
+			if (String(url).includes("api.line.me")) {
+				return Promise.resolve(makeLineRateLimitResponse());
+			}
+			return Promise.resolve(makeLineApiResponse());
+		});
+		vi.stubGlobal("fetch", mockFetch);
+
+		const testEnv = {
+			...env,
+			CHECK_SECRET: "test-secret",
+			LINE_CHANNEL_ACCESS_TOKEN: "fake-token",
+		} as typeof env;
+
+		const request = new IncomingRequest("http://example.com/check", {
+			headers: { "X-Check-Secret": "test-secret" },
+		});
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(response.status).toBe(200);
+
+		const body = (await response.json()) as {
+			ok: boolean;
+			results: Array<{
+				id: string;
+				status: number;
+				notified: boolean;
+				description: string;
+				label: string;
+			}>;
+		};
+		expect(body.ok).toBe(true);
+
+		// LINE returned 429 → LineRateLimitError thrown → notified=false for disrupted target
+		const disruptedResult = body.results.find(
+			(r) => r.id === "hakodate-sapporo",
+		);
+		expect(disruptedResult).toBeDefined();
+		expect(disruptedResult?.status).toBe(1);
+		expect(disruptedResult?.notified).toBe(false);
+
+		// KV state: pendingNotify must still be true
+		// Formula: pendingNotify = lineFailed || (previous.pendingNotify && sendWanted && !notified)
+		//        = false || (true && true && true) = true
+		const kvRaw = await env.JR_STATE.get("state:hakodate-sapporo");
+		expect(kvRaw).not.toBeNull();
+		const state = JSON.parse(kvRaw!) as StoredState;
+		expect(state.pendingNotify).toBe(true);
 	});
 });
