@@ -3,10 +3,11 @@ import {
 	createExecutionContext,
 	waitOnExecutionContext,
 } from "cloudflare:test";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import worker from "../src/index";
 import { shouldNotify } from "../src/state";
-import type { StoredState } from "../src/config";
+import type { StoredState, WatchTarget } from "../src/config";
+import { scrapeTarget } from "../src/scraper";
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
@@ -91,5 +92,401 @@ describe("shouldNotify", () => {
 
 	it("returns true when status is unchanged but pendingNotify is true", () => {
 		expect(shouldNotify({ ...baseState, pendingNotify: true }, 0)).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Mock helpers
+// ---------------------------------------------------------------------------
+
+function makeJrApiResponse(
+	senkuStatus: Record<string, number>,
+	gaikyo: Array<{ time: string; title: string; honbun: string }> = [],
+) {
+	return {
+		ok: true,
+		status: 200,
+		statusText: "OK",
+		text: () =>
+			Promise.resolve(
+				JSON.stringify({
+					time: "2026年06月18日 10時00分現在",
+					today: {
+						dateText: "2026年06月18日",
+						areaStatus: {},
+						gaikyo,
+						areaComments: [],
+						senkuStatus,
+					},
+					tomorrow: {
+						dateText: "2026年06月19日",
+						areaStatus: {},
+						gaikyo: [],
+						areaComments: [],
+						senkuStatus: {},
+					},
+				}),
+			),
+	};
+}
+
+function makeLineApiResponse() {
+	return {
+		ok: true,
+		status: 200,
+		statusText: "OK",
+		text: () => Promise.resolve("{}"),
+	};
+}
+
+// ---------------------------------------------------------------------------
+// scrapeTarget tests
+// ---------------------------------------------------------------------------
+
+describe("scrapeTarget", () => {
+	const target: WatchTarget = {
+		id: "hakodate-sapporo",
+		label: "函館・千歳線（札幌近郊）",
+		areaKey: "spo",
+		senkuKey: "hakochise",
+	};
+
+	beforeEach(() => {
+		vi.stubGlobal("fetch", vi.fn());
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("returns NORMAL status (0) with default description when senkuStatus is 0", async () => {
+		const mockFetch = vi.fn().mockResolvedValue(
+			makeJrApiResponse({ hakochise: 0, airport: 0 }),
+		);
+		vi.stubGlobal("fetch", mockFetch);
+
+		const result = await scrapeTarget(target);
+
+		expect(result.status).toBe(0);
+		expect(result.description).toBe("現在、遅れに関する情報はありません。");
+		expect(result.target).toBe(target);
+		expect(result.updatedAt).toBe("2026年06月18日 10時00分現在");
+	});
+
+	it("returns DISRUPTED status (1) with 'エリア概況: ' prefixed description when senkuStatus is 1 and gaikyo has entries", async () => {
+		const gaikyo = [
+			{
+				time: "10:00",
+				title: "運転状況",
+				honbun: "函館本線で遅延が発生しています。",
+			},
+		];
+		const mockFetch = vi.fn().mockResolvedValue(
+			makeJrApiResponse({ hakochise: 1, airport: 0 }, gaikyo),
+		);
+		vi.stubGlobal("fetch", mockFetch);
+
+		const result = await scrapeTarget(target);
+
+		expect(result.status).toBe(1);
+		expect(result.description).toBe(
+			"エリア概況: 函館本線で遅延が発生しています。",
+		);
+	});
+
+	it("throws on non-JSON response (maintenance page scenario)", async () => {
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: () => Promise.resolve("<html>Maintenance</html>"),
+		});
+		vi.stubGlobal("fetch", mockFetch);
+
+		await expect(scrapeTarget(target)).rejects.toThrow(
+			/Failed to parse JSON for target "hakodate-sapporo"/,
+		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// /check integration tests
+// ---------------------------------------------------------------------------
+
+// All tests in this block send the correct X-Check-Secret header,
+// exercising the timingSafeStringEqual(provided, secret) === true path.
+describe("fetch handler /check integration", () => {
+	beforeEach(() => {
+		vi.stubGlobal("fetch", vi.fn());
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("first run (no KV state): GET /check with correct secret returns 200, notified=false for all targets", async () => {
+		const mockFetch = vi.fn().mockImplementation((url: string) => {
+			if (String(url).includes("jrhokkaido")) {
+				return Promise.resolve(
+					makeJrApiResponse({ hakochise: 0, airport: 0 }),
+				);
+			}
+			return Promise.resolve(makeLineApiResponse());
+		});
+		vi.stubGlobal("fetch", mockFetch);
+
+		const testEnv = {
+			...env,
+			CHECK_SECRET: "test-secret",
+			LINE_CHANNEL_ACCESS_TOKEN: "fake-token",
+		} as typeof env;
+
+		const request = new IncomingRequest("http://example.com/check", {
+			headers: { "X-Check-Secret": "test-secret" },
+		});
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(response.status).toBe(200);
+
+		const body = (await response.json()) as {
+			ok: boolean;
+			results: Array<{
+				id: string;
+				status: number;
+				notified: boolean;
+				description: string;
+				label: string;
+			}>;
+		};
+		expect(body.ok).toBe(true);
+		expect(body.results).toHaveLength(2);
+		for (const result of body.results) {
+			expect(result.notified).toBe(false);
+		}
+	});
+
+	it("NORMAL→DISRUPTED transition: pre-seeded KV with NORMAL state, JR API returns DISRUPTED → notified=true for disrupted target", async () => {
+		// Pre-seed KV with NORMAL state for both targets
+		await env.JR_STATE.put(
+			"state:hakodate-sapporo",
+			JSON.stringify({
+				status: 0,
+				notifiedAt: "2024-01-01T00:00:00.000Z",
+				description: "Normal",
+			}),
+		);
+		await env.JR_STATE.put(
+			"state:spo-airport",
+			JSON.stringify({
+				status: 0,
+				notifiedAt: "2024-01-01T00:00:00.000Z",
+				description: "Normal",
+			}),
+		);
+
+		// Mock JR API to return DISRUPTED for hakochise, NORMAL for airport
+		const mockFetch = vi.fn().mockImplementation((url: string) => {
+			if (String(url).includes("jrhokkaido")) {
+				return Promise.resolve(
+					makeJrApiResponse(
+						{ hakochise: 1, airport: 0 },
+						[
+							{
+								time: "10:00",
+								title: "運転状況",
+								honbun: "函館本線で遅延が発生しています。",
+							},
+						],
+					),
+				);
+			}
+			return Promise.resolve(makeLineApiResponse());
+		});
+		vi.stubGlobal("fetch", mockFetch);
+
+		const testEnv = {
+			...env,
+			CHECK_SECRET: "test-secret",
+			LINE_CHANNEL_ACCESS_TOKEN: "fake-token",
+		} as typeof env;
+
+		const request = new IncomingRequest("http://example.com/check", {
+			headers: { "X-Check-Secret": "test-secret" },
+		});
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(response.status).toBe(200);
+
+		const body = (await response.json()) as {
+			ok: boolean;
+			results: Array<{
+				id: string;
+				status: number;
+				notified: boolean;
+				description: string;
+				label: string;
+			}>;
+		};
+		expect(body.ok).toBe(true);
+
+		const disruptedResult = body.results.find(
+			(r) => r.id === "hakodate-sapporo",
+		);
+		expect(disruptedResult).toBeDefined();
+		expect(disruptedResult?.status).toBe(1);
+		expect(disruptedResult?.notified).toBe(true);
+
+		const normalResult = body.results.find((r) => r.id === "spo-airport");
+		expect(normalResult).toBeDefined();
+		expect(normalResult?.status).toBe(0);
+		expect(normalResult?.notified).toBe(false);
+	});
+
+	it("DISRUPTED→NORMAL recovery: pre-seeded KV with DISRUPTED state, JR API returns NORMAL, NOTIFY_ON_RECOVERY=true → notified=true for recovered target", async () => {
+		// Pre-seed KV: hakodate-sapporo was disrupted, spo-airport was normal
+		await env.JR_STATE.put(
+			"state:hakodate-sapporo",
+			JSON.stringify({
+				status: 1,
+				notifiedAt: "2024-01-01T00:00:00.000Z",
+				description: "遅延中",
+			}),
+		);
+		await env.JR_STATE.put(
+			"state:spo-airport",
+			JSON.stringify({
+				status: 0,
+				notifiedAt: "2024-01-01T00:00:00.000Z",
+				description: "Normal",
+			}),
+		);
+
+		// Mock JR API: both targets now NORMAL (recovery)
+		const mockFetch = vi.fn().mockImplementation((url: string) => {
+			if (String(url).includes("jrhokkaido")) {
+				return Promise.resolve(
+					makeJrApiResponse({ hakochise: 0, airport: 0 }),
+				);
+			}
+			return Promise.resolve(makeLineApiResponse());
+		});
+		vi.stubGlobal("fetch", mockFetch);
+
+		const testEnv = {
+			...env,
+			CHECK_SECRET: "test-secret",
+			LINE_CHANNEL_ACCESS_TOKEN: "fake-token",
+			NOTIFY_ON_RECOVERY: "true",
+		} as typeof env;
+
+		const request = new IncomingRequest("http://example.com/check", {
+			headers: { "X-Check-Secret": "test-secret" },
+		});
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(response.status).toBe(200);
+
+		const body = (await response.json()) as {
+			ok: boolean;
+			results: Array<{
+				id: string;
+				status: number;
+				notified: boolean;
+				description: string;
+				label: string;
+			}>;
+		};
+		expect(body.ok).toBe(true);
+
+		// hakodate-sapporo recovered: status changed 1→0, NOTIFY_ON_RECOVERY=true → notified
+		const recoveredResult = body.results.find(
+			(r) => r.id === "hakodate-sapporo",
+		);
+		expect(recoveredResult).toBeDefined();
+		expect(recoveredResult?.status).toBe(0);
+		expect(recoveredResult?.notified).toBe(true);
+
+		// spo-airport unchanged (still NORMAL) → not notified
+		const unchangedResult = body.results.find((r) => r.id === "spo-airport");
+		expect(unchangedResult).toBeDefined();
+		expect(unchangedResult?.status).toBe(0);
+		expect(unchangedResult?.notified).toBe(false);
+	});
+
+	it("pendingNotify=true retry: pre-seeded KV with pendingNotify=true, JR API returns same DISRUPTED status → notified=true (retry succeeded)", async () => {
+		// Pre-seed KV: hakodate-sapporo was disrupted but LINE send failed (pendingNotify=true)
+		await env.JR_STATE.put(
+			"state:hakodate-sapporo",
+			JSON.stringify({
+				status: 1,
+				notifiedAt: "",
+				description: "遅延中",
+				pendingNotify: true,
+			}),
+		);
+		await env.JR_STATE.put(
+			"state:spo-airport",
+			JSON.stringify({
+				status: 0,
+				notifiedAt: "2024-01-01T00:00:00.000Z",
+				description: "Normal",
+			}),
+		);
+
+		// Mock JR API: hakodate-sapporo still DISRUPTED (status unchanged), airport still NORMAL
+		const mockFetch = vi.fn().mockImplementation((url: string) => {
+			if (String(url).includes("jrhokkaido")) {
+				return Promise.resolve(
+					makeJrApiResponse({ hakochise: 1, airport: 0 }),
+				);
+			}
+			return Promise.resolve(makeLineApiResponse());
+		});
+		vi.stubGlobal("fetch", mockFetch);
+
+		const testEnv = {
+			...env,
+			CHECK_SECRET: "test-secret",
+			LINE_CHANNEL_ACCESS_TOKEN: "fake-token",
+		} as typeof env;
+
+		const request = new IncomingRequest("http://example.com/check", {
+			headers: { "X-Check-Secret": "test-secret" },
+		});
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(response.status).toBe(200);
+
+		const body = (await response.json()) as {
+			ok: boolean;
+			results: Array<{
+				id: string;
+				status: number;
+				notified: boolean;
+				description: string;
+				label: string;
+			}>;
+		};
+		expect(body.ok).toBe(true);
+
+		// hakodate-sapporo: status unchanged (1→1) but pendingNotify=true triggers retry → notified
+		const retryResult = body.results.find((r) => r.id === "hakodate-sapporo");
+		expect(retryResult).toBeDefined();
+		expect(retryResult?.status).toBe(1);
+		expect(retryResult?.notified).toBe(true);
+
+		// spo-airport unchanged (still NORMAL) → not notified
+		const normalResult = body.results.find((r) => r.id === "spo-airport");
+		expect(normalResult).toBeDefined();
+		expect(normalResult?.status).toBe(0);
+		expect(normalResult?.notified).toBe(false);
 	});
 });

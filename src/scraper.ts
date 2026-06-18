@@ -64,7 +64,16 @@ export async function scrapeTarget(target: WatchTarget): Promise<ScrapeResult> {
     // JR Hokkaido serves JSON with a UTF-8 BOM — strip it via charCodeAt before parsing
     const raw = await res.text();
     const stripped = raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw;
-    const json: AreaJson = JSON.parse(stripped);
+    let json: AreaJson;
+    try {
+      json = JSON.parse(stripped) as AreaJson;
+    } catch {
+      throw new Error(`Failed to parse JSON for target "${target.id}" (url: ${url}). Response may be non-JSON (maintenance page?)`);
+    }
+
+    if (typeof json.today?.senkuStatus !== "object" || json.today.senkuStatus === null) {
+      throw new Error(`Unexpected senkuStatus shape for target "${target.id}" — API structure may have changed.`);
+    }
 
     const rawStatus = json.today?.senkuStatus?.[target.senkuKey];
     if (rawStatus === undefined) {
@@ -80,16 +89,23 @@ export async function scrapeTarget(target: WatchTarget): Promise<ScrapeResult> {
       status = 1;
     }
 
-    // Pick the first non-empty gaikyo entry, or fall back to a default message
-    const gaikyoEntry = json.today?.gaikyo?.find((g) => typeof g.honbun === "string" && g.honbun.trim() !== "");
+    // Pick the first non-empty gaikyo entry only when this route is disrupted,
+    // to avoid attaching area-wide disruption text to a normal-status route.
+    const gaikyoArray = Array.isArray(json.today?.gaikyo) ? json.today.gaikyo : [];
+    const gaikyoEntry = status === 1
+      ? gaikyoArray.find(
+          (g) => g != null && typeof g === "object" && typeof g.honbun === "string" && g.honbun.trim() !== "",
+        )
+      : undefined;
     const description =
-      gaikyoEntry?.honbun ?? "現在、遅れに関する情報はありません。";
+      (gaikyoEntry ? `エリア概況: ${gaikyoEntry.honbun}` : null) ??
+      (status === 1 ? "詳細情報は公式サイトでご確認ください。" : "現在、遅れに関する情報はありません。");
 
     return {
       target,
       status,
       description,
-      updatedAt: json.time ?? "",
+      updatedAt: typeof json.time === "string" ? json.time : "",
     };
   } finally {
     clearTimeout(timeoutId);

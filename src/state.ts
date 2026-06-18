@@ -13,6 +13,7 @@ function isValidStoredState(v: unknown): v is StoredState {
   if (typeof s.notifiedAt !== "string") return false;
   if (typeof s.description !== "string") return false;
   if (s.status !== 0 && s.status !== 1) return false;
+  if (s.pendingNotify !== undefined && typeof s.pendingNotify !== "boolean") return false;
   return true;
 }
 

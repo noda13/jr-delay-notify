@@ -1,4 +1,4 @@
-import { DEFAULT_TARGETS, STATUS, StoredState, WatchTarget } from "./config";
+import { DEFAULT_TARGETS, RouteStatus, STATUS, StoredState, WatchTarget } from "./config";
 import { buildNotificationText } from "./message";
 import { scrapeTarget } from "./scraper";
 import { readState, shouldNotify, writeState } from "./state";
@@ -7,7 +7,7 @@ import { sendLineMessage } from "./line";
 interface TargetResult {
   id: string;
   label: string;
-  status: number;
+  status: RouteStatus | -1;
   description: string;
   notified: boolean;
 }
@@ -39,9 +39,10 @@ async function processTarget(
     status: result.status,
     notifiedAt: notified ? new Date().toISOString() : (previous?.notifiedAt ?? ""),
     description: result.description,
-    // Known limitation: a pending disruption alert (pendingNotify=true) is intentionally cleared
-    // when the route recovers to NORMAL while NOTIFY_ON_RECOVERY is false. The disruption has
-    // already resolved, so sending a late "was disrupted" alert would confuse users.
+    // Known limitation: a pending disruption alert (pendingNotify=true) is intentionally cleared in two cases:
+    // (a) Route recovers to NORMAL with NOTIFY_ON_RECOVERY=false: disruption resolved, late alert confuses users.
+    // (b) Route recovers to NORMAL with NOTIFY_ON_RECOVERY=true and recovery notification sent successfully:
+    //     users receive only the recovery message with no prior disruption alert.
     pendingNotify: lineFailed || (previous?.pendingNotify === true && sendWanted && !notified),
   };
   try {
@@ -49,7 +50,9 @@ async function processTarget(
   } catch (kvErr) {
     // State not persisted. If notification was sent (notified=true), the next poll may
     // detect the same transition again and send a duplicate — accepted at-least-once behavior.
-    console.error(`KV write failed for ${target.id}:`, kvErr);
+    // If LINE also failed (lineFailed=true), the pending retry flag may be lost if the
+    // old KV state does not already have pendingNotify=true.
+    console.error(`KV write failed for ${target.id} (lineFailed=${lineFailed}):`, kvErr);
   }
 
   return { id: target.id, label: target.label, status: result.status, description: result.description, notified };
@@ -59,7 +62,7 @@ async function timingSafeStringEqual(a: string, b: string): Promise<boolean> {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey(
     "raw",
-    enc.encode("jr-delay-notify-compare-key"),
+    crypto.getRandomValues(new Uint8Array(32)),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
@@ -70,7 +73,8 @@ async function timingSafeStringEqual(a: string, b: string): Promise<boolean> {
   ]);
   const aBytes = new Uint8Array(aSig);
   const bBytes = new Uint8Array(bSig);
-  let diff = 0;
+  // Both HMAC-SHA256 digests are always 32 bytes; length XOR is a safety net against future changes.
+  let diff = aBytes.length ^ bBytes.length;
   for (let i = 0; i < aBytes.length; i++) diff |= aBytes[i] ^ bBytes[i];
   return diff === 0;
 }
@@ -89,10 +93,14 @@ export default {
     );
 
     const errorStateKey = "state:__error-active";
-    const prevErrorRaw = await env.JR_STATE.get(errorStateKey).catch((e) => {
+    let prevErrorRaw: string | null = null;
+    let errorReadFailed = false;
+    try {
+      prevErrorRaw = await env.JR_STATE.get(errorStateKey);
+    } catch (e) {
       console.error("Failed to read error-active state from KV (may cause duplicate error notification):", e);
-      return null;
-    });
+      errorReadFailed = true;
+    }
     const wasInError = prevErrorRaw === "1";
 
     const failedTargets = settled
@@ -106,6 +114,8 @@ export default {
     if (failedTargets.length > 0) {
       // errorNotified: true if the user was already told (prior run) or we just told them
       let errorNotified = wasInError;
+      // errorNotified starts as wasInError so already-in-error runs still write the KV flag,
+      // refreshing the 24h TTL and preventing the flag from expiring during a sustained outage.
       if (!wasInError && env.LINE_CHANNEL_ACCESS_TOKEN) {
         const errorMsg =
           failedTargets.length === 1
@@ -119,11 +129,16 @@ export default {
           });
       }
       if (errorNotified) {
+        // Note: concurrent scheduled invocations could both read wasInError=false and both send
+        // a notification before either write lands. KV has no compare-and-swap, so duplicate
+        // error broadcasts are possible under concurrent execution — accepted as a rare edge case.
         await env.JR_STATE.put(errorStateKey, "1", { expirationTtl: 60 * 60 * 24 }).catch((e) => {
           console.error("Failed to persist error-active state to KV:", e);
         });
       }
-    } else if (wasInError) {
+    } else if (wasInError || errorReadFailed) {
+      // Clear "1" on recovery (wasInError), or attempt to clear a stale "1" that may exist
+      // when the prior read failed (errorReadFailed). Harmless if flag is already "0" or absent.
       await env.JR_STATE.put(errorStateKey, "0", { expirationTtl: 60 * 60 * 24 }).catch((e) => {
         console.error("Failed to persist error-active state to KV:", e);
       });
