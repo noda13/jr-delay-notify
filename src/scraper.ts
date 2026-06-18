@@ -61,9 +61,9 @@ export async function scrapeTarget(target: WatchTarget): Promise<ScrapeResult> {
       throw new Error(`Fetch failed: ${res.status} ${res.statusText} for ${url}`);
     }
 
-    // JR Hokkaido serves JSON with a UTF-8 BOM — strip it via charCodeAt before parsing
+    // JR Hokkaido serves JSON with a UTF-8 BOM — strip it before parsing
     const raw = await res.text();
-    const stripped = raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw;
+    const stripped = raw.replace(/^\uFEFF/, "");
     let json: AreaJson;
     try {
       json = JSON.parse(stripped) as AreaJson;
@@ -85,6 +85,7 @@ export async function scrapeTarget(target: WatchTarget): Promise<ScrapeResult> {
     } else if (rawStatus === 1) {
       status = 1;
     } else {
+      // Fail-safe: treat any unknown code as DISRUPTED to avoid missing real disruptions.
       console.warn(`[jr-delay-notify] Unexpected senkuStatus value ${rawStatus} for target "${target.id}" — treating as DISRUPTED.`);
       status = 1;
     }

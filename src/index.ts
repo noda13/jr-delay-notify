@@ -52,6 +52,9 @@ async function processTarget(
     // detect the same transition again and send a duplicate — accepted at-least-once behavior.
     // If LINE also failed (lineFailed=true), the pending retry flag may be lost if the
     // old KV state does not already have pendingNotify=true.
+    // Note: concurrent scheduled invocations or simultaneous /check requests could both read
+    // the same previous state and both send notifications before either write lands —
+    // accepted as at-least-once delivery.
     console.error(`KV write failed for ${target.id} (lineFailed=${lineFailed}):`, kvErr);
   }
 
@@ -116,6 +119,10 @@ export default {
       let errorNotified = wasInError;
       // errorNotified starts as wasInError so already-in-error runs still write the KV flag,
       // refreshing the 24h TTL and preventing the flag from expiring during a sustained outage.
+      // One-shot alert design: only notify on the first error run of an outage. During a sustained
+      // outage, no re-alert is sent — the user receives a single notification. For periodic
+      // re-alerting, store a timestamp in the KV error value and re-send when elapsed time
+      // exceeds a threshold.
       if (!wasInError && env.LINE_CHANNEL_ACCESS_TOKEN) {
         const errorMsg =
           failedTargets.length === 1
@@ -128,6 +135,9 @@ export default {
             return false;
           });
       }
+      // Note: if LINE_CHANNEL_ACCESS_TOKEN is absent, the block above is skipped, errorNotified
+      // stays as wasInError, and the KV error-active flag is never set — alerts are suppressed
+      // entirely when the token is absent.
       if (errorNotified) {
         // Note: concurrent scheduled invocations could both read wasInError=false and both send
         // a notification before either write lands. KV has no compare-and-swap, so duplicate
@@ -153,7 +163,13 @@ export default {
         return new Response("Forbidden", { status: 403 });
       }
       const provided = request.headers.get("X-Check-Secret");
-      if (!provided || !(await timingSafeStringEqual(provided, env.CHECK_SECRET))) {
+      let secretMatches = false;
+      try {
+        secretMatches = !!provided && (await timingSafeStringEqual(provided, env.CHECK_SECRET));
+      } catch {
+        // fail closed: treat crypto errors as non-match
+      }
+      if (!secretMatches) {
         return new Response("Forbidden", { status: 403 });
       }
 
