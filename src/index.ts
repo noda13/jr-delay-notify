@@ -42,7 +42,7 @@ async function processTarget(
 
   const newState: StoredState = {
     status: result.status,
-    notifiedAt: notified ? new Date().toISOString() : (previous?.notifiedAt ?? ""),
+    ...(notified ? { notifiedAt: new Date().toISOString() } : previous?.notifiedAt ? { notifiedAt: previous.notifiedAt } : {}),
     description: result.description,
     // Known limitation: a pending disruption alert (pendingNotify=true) is intentionally cleared in two cases:
     // (a) Route recovers to NORMAL with NOTIFY_ON_RECOVERY=false: disruption resolved, late alert confuses users.
@@ -128,7 +128,7 @@ export default {
       // outage, no re-alert is sent — the user receives a single notification. For periodic
       // re-alerting, store a timestamp in the KV error value and re-send when elapsed time
       // exceeds a threshold.
-      if (!wasInError) {
+      if (!wasInError && !errorReadFailed) {
         if (!env.LINE_CHANNEL_ACCESS_TOKEN) {
           console.error(`[jr-delay-notify] ${failedTargets.length} target(s) failed but LINE_CHANNEL_ACCESS_TOKEN is absent — alert suppressed.`);
         } else {
@@ -154,9 +154,8 @@ export default {
           console.error("Failed to persist error-active state to KV:", e);
         });
       }
-    } else if (wasInError || errorReadFailed) {
-      // Clear "1" on recovery (wasInError), or attempt to clear a stale "1" that may exist
-      // when the prior read failed (errorReadFailed). Delete is preferred over put("0") to avoid
+    } else if (wasInError) {
+      // Clear "1" on recovery. Delete is preferred over put("0") to avoid
       // unnecessary KV writes on every recovery cycle.
       await env.JR_STATE.delete(errorStateKey).catch((e) => {
         console.error("Failed to clear error-active state from KV:", e);

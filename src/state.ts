@@ -10,7 +10,7 @@ function isValidStoredState(v: unknown): v is StoredState {
   if (typeof v !== "object" || v === null) return false;
   const s = v as Record<string, unknown>;
   if (typeof s.status !== "number") return false;
-  if (typeof s.notifiedAt !== "string") return false;
+  if (s.notifiedAt !== undefined && typeof s.notifiedAt !== "string") return false;
   if (typeof s.description !== "string") return false;
   if (s.status !== 0 && s.status !== 1) return false;
   if (s.pendingNotify !== undefined && typeof s.pendingNotify !== "boolean") return false;

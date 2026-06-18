@@ -47,7 +47,7 @@ export interface StoredState {
   /** Last known status value */
   status: RouteStatus;
   /** ISO 8601 timestamp of last notification sent */
-  notifiedAt: string;
+  notifiedAt?: string;
   /** Description text from last status change */
   description: string;
   /** true if a notification was attempted but failed and should be retried next run */
