@@ -17,22 +17,12 @@ export interface ScrapeResult {
   updatedAt: string;
 }
 
-/** Raw structure of the JR Hokkaido area JSON */
+/** Raw structure of the JR Hokkaido area JSON (only consumed fields) */
 interface AreaJson {
   time: string;
   today: {
-    dateText: string;
-    areaStatus: Record<string, number>;
-    gaikyo: GaikyoEntry[];
-    areaComments: unknown[];
     senkuStatus: Record<string, number>;
-  };
-  tomorrow: {
-    dateText: string;
-    areaStatus: Record<string, number>;
     gaikyo: GaikyoEntry[];
-    areaComments: unknown[];
-    senkuStatus: Record<string, number>;
   };
 }
 

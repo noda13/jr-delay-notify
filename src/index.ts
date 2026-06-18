@@ -50,17 +50,9 @@ async function processTarget(
     status: result.status,
     ...(notified ? { notifiedAt: new Date().toISOString() } : (result.status === STATUS.DISRUPTED && previous?.notifiedAt) ? { notifiedAt: previous.notifiedAt } : {}),
     description: result.description,
-    // pendingNotify=true when LINE send failed (lineFailed) or a prior pending send still couldn't go through.
-    // Intentionally cleared (set to false) in two cases:
-    // (a) NOTIFY_ON_RECOVERY=false and route returns NORMAL: sendWanted=false, so the pending retry is
-    //     dropped. This includes the edge case where the disruption alert was never successfully delivered
-    //     before the route recovered — the disruption is already over, so a late alert would confuse users.
-    //     Accepted trade-off for a commute monitor: a disruption that resolves within one poll cycle is silent.
-    // (b) NOTIFY_ON_RECOVERY=true and recovery notification sent successfully (notified=true): cleared normally.
-    // Note: if scrapeTarget was previously failing (and processTarget was rejecting), pendingNotify=true from
-    //     a prior disruption is preserved in KV unchanged. When scraping recovers, shouldNotify fires the
-    //     delayed notification using fresh scrape data. This is intentional: the alert fires with current info.
-    pendingNotify: lineFailed || (previous?.pendingNotify === true && sendWanted && !notified),
+    // pendingNotify=true when the LINE send failed (lineFailed=true), so the notification is retried
+    // on the next run rather than permanently dropped.
+    pendingNotify: lineFailed,
   };
   // Skip KV write when state is identical to previous to conserve free-tier write quota.
   // Compare all fields; treat undefined pendingNotify/notifiedAt as their false/absent equivalents.
