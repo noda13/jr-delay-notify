@@ -16,7 +16,7 @@
     "crons": [
       "*/5 21-23 * * 0-4", // UTC Sun-Thu 21:00-23:59 → JST Mon-Fri 06:00-08:59 (morning commute)
       "0 0 * * 1-5",       // UTC Mon-Fri 00:00 → JST Mon-Fri 09:00 (morning commute end)
-      "*/5 5-9 * * 1-5"    // UTC Mon-Fri 05:00-09:59 → JST Mon-Fri 14:00-18:59 (evening commute)
+      "*/5 5-10 * * 1-5"   // UTC Mon-Fri 05:00-10:59 → JST Mon-Fri 14:00-19:59 (evening commute)
     ]
   },
   "vars": {

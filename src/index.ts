@@ -31,8 +31,11 @@ async function processTarget(
       notified = true;
     } catch (lineErr) {
       if (lineErr instanceof LineRateLimitError) {
-        // Do not set pendingNotify — retrying would exhaust monthly quota further.
-        console.error(`LINE rate limit for ${target.id}: message dropped, not retrying.`);
+        // Set lineFailed so pendingNotify=true is stored — ensures the notification is
+        // retried on the next run rather than permanently dropped. If the monthly quota
+        // is exhausted, subsequent retries will also return 429 until quota resets.
+        console.error(`LINE rate limit for ${target.id}: will retry on next run.`);
+        lineFailed = true;
       } else {
         console.error(`LINE notification failed for ${target.id}:`, lineErr);
         lineFailed = true;
@@ -151,7 +154,7 @@ export default {
         // a notification before either write lands — accepted as a rare edge case (no CAS in KV).
         // Note: if put fails below, the next failing cron tick will re-send the error alert
         // (at-least-once delivery, consistent with per-target KV write failure behavior).
-        await env.JR_STATE.put(errorStateKey, "1", { expirationTtl: 60 * 60 * 24 }).catch((e) => {
+        await env.JR_STATE.put(errorStateKey, "1", { expirationTtl: 60 * 60 * 24 * 7 }).catch((e) => {
           console.error("Failed to persist error-active state to KV:", e);
         });
       }

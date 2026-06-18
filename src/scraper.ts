@@ -111,7 +111,7 @@ export async function scrapeTarget(target: WatchTarget): Promise<ScrapeResult> {
       target,
       status,
       description,
-      updatedAt: typeof json.time === "string" ? json.time : "",
+      updatedAt: typeof json.time === "string" && json.time.trim() !== "" ? json.time : "時刻不明",
     };
   } finally {
     clearTimeout(timeoutId);
