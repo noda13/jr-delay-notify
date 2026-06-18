@@ -22,6 +22,9 @@
       "0 0 * * 1-5",        // UTC Mon-Fri 00:00       = JST Mon-Fri 09:00       (morning commute end)
       "*/5 5-10 * * 1-5"   // UTC Mon-Fri 05:00-10:59 = JST Mon-Fri 14:00-19:59 (evening commute)
     ]
+    // Note: JST 09:01–13:59 is intentionally not covered (midday gap).
+    // A disruption that clears mid-morning won't trigger a recovery notice until 14:00.
+    // Accepted trade-off: this is a commute-time monitor, not a 24-hour service.
   },
   "vars": {
     "NOTIFY_ON_RECOVERY": "true"

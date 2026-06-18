@@ -28,20 +28,26 @@ async function processTarget(
   let lineFailed = false;
   const sendWanted = notify && !(result.status === STATUS.NORMAL && !notifyOnRecovery);
   if (sendWanted) {
-    const text = buildNotificationText(target, result.status, result.description, result.updatedAt);
-    try {
-      await sendLineMessage(env.LINE_CHANNEL_ACCESS_TOKEN, text);
-      notified = true;
-    } catch (lineErr) {
-      if (lineErr instanceof LineRateLimitError) {
-        // Set lineFailed so pendingNotify=true is stored — ensures the notification is
-        // retried on the next run rather than permanently dropped. If the monthly quota
-        // is exhausted, subsequent retries will also return 429 until quota resets.
-        console.error(`LINE rate limit for ${target.id}: will retry on next run.`);
-        lineFailed = true;
-      } else {
-        console.error(`LINE notification failed for ${target.id}:`, lineErr);
-        lineFailed = true;
+    if (!env.LINE_CHANNEL_ACCESS_TOKEN) {
+      console.error(`[jr-delay-notify] LINE_CHANNEL_ACCESS_TOKEN is absent — notification skipped for ${target.id}. Check wrangler secrets.`);
+      // Note: lineFailed is NOT set here — a missing token is a misconfiguration, not a transient
+      // network failure, so retrying via pendingNotify=true would just spam the log.
+    } else {
+      const text = buildNotificationText(target, result.status, result.description, result.updatedAt);
+      try {
+        await sendLineMessage(env.LINE_CHANNEL_ACCESS_TOKEN, text);
+        notified = true;
+      } catch (lineErr) {
+        if (lineErr instanceof LineRateLimitError) {
+          // Set lineFailed so pendingNotify=true is stored — ensures the notification is
+          // retried on the next run rather than permanently dropped. If the monthly quota
+          // is exhausted, subsequent retries will also return 429 until quota resets.
+          console.error(`LINE rate limit for ${target.id}: will retry on next run.`);
+          lineFailed = true;
+        } else {
+          console.error(`LINE notification failed for ${target.id}:`, lineErr);
+          lineFailed = true;
+        }
       }
     }
   }
