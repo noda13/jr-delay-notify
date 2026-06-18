@@ -50,6 +50,8 @@ export interface StoredState {
   notifiedAt: string;
   /** Description text from last status change */
   description: string;
+  /** true if a notification was attempted but failed and should be retried next run */
+  pendingNotify?: boolean;
 }
 
 /**

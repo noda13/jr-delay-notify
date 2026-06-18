@@ -8,7 +8,7 @@ function stateKey(targetId: string): string {
 /** Runtime shape guard for StoredState */
 function isValidStoredState(v: unknown): v is StoredState {
   if (typeof v !== "object" || v === null) return false;
-  const s = v as any;
+  const s = v as Record<string, unknown>;
   if (typeof s.status !== "number") return false;
   if (typeof s.notifiedAt !== "string") return false;
   if (typeof s.description !== "string") return false;
@@ -67,5 +67,5 @@ export function shouldNotify(
   newStatus: RouteStatus,
 ): boolean {
   if (previous === null) return false; // first run: silent
-  return previous.status !== newStatus;
+  return previous.status !== newStatus || previous.pendingNotify === true;
 }

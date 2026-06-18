@@ -21,8 +21,9 @@ export async function sendLineMessage(
 
   if (!res.ok) {
     const body = await res.text();
+    const truncatedBody = body.length > 200 ? `${body.slice(0, 200)}…` : body;
     throw new Error(
-      `LINE API error: ${res.status} ${res.statusText} — ${body}`,
+      `LINE API error: ${res.status} ${res.statusText} — ${truncatedBody}`,
     );
   }
 }
