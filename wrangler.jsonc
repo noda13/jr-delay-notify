@@ -1,0 +1,25 @@
+{
+  "name": "jr-delay-notify",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "observability": {
+    "enabled": true
+  },
+  "kv_namespaces": [
+    {
+      "binding": "JR_STATE",
+      "id": "REPLACE_WITH_KV_ID",
+      "preview_id": "REPLACE_WITH_PREVIEW_KV_ID"
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "*/5 21-23 * * 1-5",
+      "0 0 * * 2-6",
+      "*/5 5-9 * * 1-5"
+    ]
+  },
+  "vars": {
+    "NOTIFY_ON_RECOVERY": "true"
+  }
+}
