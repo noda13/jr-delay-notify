@@ -12,6 +12,9 @@ interface TargetResult {
   notified: boolean;
 }
 
+// scrapeTarget (fetch non-2xx, JSON parse, unknown senkuKey) and readState (KV.get) can throw.
+// Those errors propagate as rejected promises to Promise.allSettled in the callers.
+// LINE send and KV write errors are caught internally and do NOT cause rejection.
 async function processTarget(
   target: WatchTarget,
   env: Env,
@@ -47,23 +50,35 @@ async function processTarget(
     status: result.status,
     ...(notified ? { notifiedAt: new Date().toISOString() } : (result.status === STATUS.DISRUPTED && previous?.notifiedAt) ? { notifiedAt: previous.notifiedAt } : {}),
     description: result.description,
-    // Known limitation: a pending disruption alert (pendingNotify=true) is intentionally cleared in two cases:
-    // (a) Route recovers to NORMAL with NOTIFY_ON_RECOVERY=false: disruption resolved, late alert confuses users.
-    // (b) Route recovers to NORMAL with NOTIFY_ON_RECOVERY=true and recovery notification sent successfully:
-    //     users receive only the recovery message with no prior disruption alert.
+    // pendingNotify=true when LINE send failed (lineFailed) or a prior pending send still couldn't go through.
+    // Intentionally cleared (set to false) in two cases:
+    // (a) NOTIFY_ON_RECOVERY=false and route returns NORMAL: sendWanted=false, so the pending retry is
+    //     dropped. This includes the edge case where the disruption alert was never successfully delivered
+    //     before the route recovered — the disruption is already over, so a late alert would confuse users.
+    //     Accepted trade-off for a commute monitor: a disruption that resolves within one poll cycle is silent.
+    // (b) NOTIFY_ON_RECOVERY=true and recovery notification sent successfully (notified=true): cleared normally.
+    // Note: if scrapeTarget was previously failing (and processTarget was rejecting), pendingNotify=true from
+    //     a prior disruption is preserved in KV unchanged. When scraping recovers, shouldNotify fires the
+    //     delayed notification using fresh scrape data. This is intentional: the alert fires with current info.
     pendingNotify: lineFailed || (previous?.pendingNotify === true && sendWanted && !notified),
   };
-  try {
-    await writeState(env.JR_STATE, target.id, newState);
-  } catch (kvErr) {
-    // State not persisted. If notification was sent (notified=true), the next poll may
-    // detect the same transition again and send a duplicate — accepted at-least-once behavior.
-    // If LINE also failed (lineFailed=true), the pending retry flag may be lost if the
-    // old KV state does not already have pendingNotify=true.
-    // Note: concurrent scheduled invocations or simultaneous /check requests could both read
-    // the same previous state and both send notifications before either write lands —
-    // accepted as at-least-once delivery.
-    console.error(`KV write failed for ${target.id} (lineFailed=${lineFailed}):`, kvErr);
+  // Skip KV write when state is identical to previous to conserve free-tier write quota.
+  // Compare all fields; treat undefined pendingNotify/notifiedAt as their false/absent equivalents.
+  const stateChanged = previous === null
+    || previous.status !== newState.status
+    || previous.description !== newState.description
+    || previous.notifiedAt !== newState.notifiedAt
+    || (previous.pendingNotify ?? false) !== (newState.pendingNotify ?? false);
+  if (stateChanged) {
+    try {
+      await writeState(env.JR_STATE, target.id, newState);
+    } catch (kvErr) {
+      // State not persisted. If notification was sent (notified=true), the next poll may
+      // detect the same transition again and send a duplicate — accepted at-least-once behavior.
+      // If LINE also failed (lineFailed=true), the pending retry flag may be lost if the
+      // old KV state does not already have pendingNotify=true.
+      console.error(`KV write failed for ${target.id} (lineFailed=${lineFailed}):`, kvErr);
+    }
   }
 
   return { id: target.id, label: target.label, status: result.status, description: result.description, notified };
@@ -84,8 +99,7 @@ async function timingSafeStringEqual(a: string, b: string): Promise<boolean> {
   ]);
   const aBytes = new Uint8Array(aSig);
   const bBytes = new Uint8Array(bSig);
-  // Both HMAC-SHA256 digests are always 32 bytes; length XOR is a safety net against future changes.
-  let diff = aBytes.length ^ bBytes.length;
+  let diff = 0;
   for (let i = 0; i < aBytes.length; i++) diff |= aBytes[i] ^ bBytes[i];
   return diff === 0;
 }
@@ -122,15 +136,14 @@ export default {
       console.error(`Error processing target ${target.id}:`, (r as PromiseRejectedResult).reason);
     }
 
+    // Note: failedTargets counts only processTarget rejections (scrapeTarget/readState throws).
+    // LINE send and KV write failures are caught inside processTarget and do NOT appear here.
+    // This is intentional: monitoring alerts cover hard scraper/network failures only.
     if (failedTargets.length > 0) {
-      // errorNotified: true if the user was already told (prior run) or we just told them
-      let errorNotified = wasInError;
-      // errorNotified starts as wasInError so already-in-error runs still write the KV flag,
-      // refreshing the 24h TTL and preventing the flag from expiring during a sustained outage.
-      // One-shot alert design: only notify on the first error run of an outage. During a sustained
-      // outage, no re-alert is sent — the user receives a single notification. For periodic
-      // re-alerting, store a timestamp in the KV error value and re-send when elapsed time
-      // exceeds a threshold.
+      // One-shot alert: only send on the first failing run (!wasInError).
+      // On subsequent failing runs wasInError=true — no re-alert is sent. If errors persist beyond
+      // 7 days the flag expires naturally, and the next failing run sends a fresh alert (re-alert).
+      let errorNotified = false;
       if (!wasInError && !errorReadFailed) {
         if (!env.LINE_CHANNEL_ACCESS_TOKEN) {
           console.error(`[jr-delay-notify] ${failedTargets.length} target(s) failed but LINE_CHANNEL_ACCESS_TOKEN is absent — alert suppressed.`);
@@ -147,12 +160,12 @@ export default {
             });
         }
       }
-      // Note: if LINE_CHANNEL_ACCESS_TOKEN is absent, the block above logs the suppression,
-      // errorNotified stays as wasInError, and the KV error-active flag is never set.
       if (errorNotified) {
-        // Note: concurrent scheduled invocations could both read wasInError=false and both send
-        // a notification before either write lands — accepted as a rare edge case (no CAS in KV).
-        // Note: if put fails below, the next failing cron tick will re-send the error alert
+        // Set flag only on first detection. Not refreshed on subsequent failing runs, so the flag
+        // ages out after 7 days if the error persists — producing a re-alert at that point.
+        // Note: concurrent invocations may both read wasInError=false and both send — accepted
+        // at-least-once edge case (no CAS in KV).
+        // Note: if put fails below, next failing run (wasInError=false again) re-sends the alert
         // (at-least-once delivery, consistent with per-target KV write failure behavior).
         await env.JR_STATE.put(errorStateKey, "1", { expirationTtl: 60 * 60 * 24 * 7 }).catch((e) => {
           console.error("Failed to persist error-active state to KV:", e);
@@ -161,6 +174,10 @@ export default {
     } else if (wasInError) {
       // Clear "1" on recovery. Delete is preferred over put("0") to avoid
       // unnecessary KV writes on every recovery cycle.
+      // Note: if KV.get threw (errorReadFailed=true), wasInError is forced false so this branch
+      // does not fire. A stale "1" flag set by a prior run will remain until the next healthy run
+      // (where wasInError=true and failedTargets=[] correctly triggers this delete), or until the
+      // 7-day TTL expires. Self-heals within one cron cycle once KV reads recover.
       await env.JR_STATE.delete(errorStateKey).catch((e) => {
         console.error("Failed to clear error-active state from KV:", e);
       });
