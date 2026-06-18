@@ -46,33 +46,52 @@ export async function scrapeTarget(target: WatchTarget): Promise<ScrapeResult> {
     throw new Error(`Unknown areaKey: ${target.areaKey}`);
   }
 
-  const res = await fetch(url, {
-    headers: {
-      "User-Agent": "jr-delay-notify/1.0",
-      "Accept": "application/json",
-    },
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "jr-delay-notify/1.0",
+        "Accept": "application/json",
+      },
+    });
 
-  if (!res.ok) {
-    throw new Error(`Fetch failed: ${res.status} ${res.statusText} for ${url}`);
+    if (!res.ok) {
+      throw new Error(`Fetch failed: ${res.status} ${res.statusText} for ${url}`);
+    }
+
+    // JR Hokkaido serves JSON with a UTF-8 BOM — strip it via charCodeAt before parsing
+    const raw = await res.text();
+    const stripped = raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw;
+    const json: AreaJson = JSON.parse(stripped);
+
+    const rawStatus = json.today?.senkuStatus?.[target.senkuKey];
+    if (rawStatus === undefined) {
+      throw new Error(`senkuKey "${target.senkuKey}" not found in senkuStatus for target "${target.id}". API structure may have changed.`);
+    }
+    let status: RouteStatus;
+    if (rawStatus === 0) {
+      status = 0;
+    } else if (rawStatus === 1) {
+      status = 1;
+    } else {
+      console.warn(`[jr-delay-notify] Unexpected senkuStatus value ${rawStatus} for target "${target.id}" — treating as DISRUPTED.`);
+      status = 1;
+    }
+
+    // Pick the first non-empty gaikyo entry, or fall back to a default message
+    const gaikyoEntry = json.today?.gaikyo?.find((g) => typeof g.honbun === "string" && g.honbun.trim() !== "");
+    const description =
+      gaikyoEntry?.honbun ?? "現在、遅れに関する情報はありません。";
+
+    return {
+      target,
+      status,
+      description,
+      updatedAt: json.time ?? "",
+    };
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  // JR Hokkaido serves JSON with a UTF-8 BOM (﻿) — strip it before parsing
-  const raw = await res.text();
-  const json: AreaJson = JSON.parse(raw.replace(/^﻿/, ""));
-
-  const rawStatus = json.today?.senkuStatus?.[target.senkuKey];
-  const status: RouteStatus = rawStatus === 1 ? 1 : 0;
-
-  // Pick the first non-empty gaikyo entry, or fall back to a default message
-  const gaikyoEntry = json.today?.gaikyo?.find((g) => g.honbun.trim() !== "");
-  const description =
-    gaikyoEntry?.honbun ?? "現在、遅れに関する情報はありません。";
-
-  return {
-    target,
-    status,
-    description,
-    updatedAt: json.time ?? "",
-  };
 }

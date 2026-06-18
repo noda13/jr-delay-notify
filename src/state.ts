@@ -1,8 +1,19 @@
-import { RouteStatus, StoredState, WatchTarget } from "./config";
+import { RouteStatus, StoredState } from "./config";
 
 /** KV key for a target's stored state */
 function stateKey(targetId: string): string {
   return `state:${targetId}`;
+}
+
+/** Runtime shape guard for StoredState */
+function isValidStoredState(v: unknown): v is StoredState {
+  if (typeof v !== "object" || v === null) return false;
+  const s = v as any;
+  if (typeof s.status !== "number") return false;
+  if (typeof s.notifiedAt !== "string") return false;
+  if (typeof s.description !== "string") return false;
+  if (s.status !== 0 && s.status !== 1) return false;
+  return true;
 }
 
 /**
@@ -16,15 +27,21 @@ export async function readState(
   const raw = await kv.get(stateKey(targetId));
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as StoredState;
+    const parsed: unknown = JSON.parse(raw);
+    if (!isValidStoredState(parsed)) {
+      console.warn(`[jr-delay-notify] Invalid KV state shape for "${targetId}" — treating as first run.`);
+      return null;
+    }
+    return parsed;
   } catch {
+    console.warn(`[jr-delay-notify] Failed to parse KV state for "${targetId}" — treating as first run.`);
     return null;
   }
 }
 
 /**
  * Writes the current state to KV.
- * Uses 7-day TTL to auto-clean stale entries.
+ * Uses 365-day TTL to auto-clean stale entries.
  */
 export async function writeState(
   kv: KVNamespace,
@@ -32,7 +49,7 @@ export async function writeState(
   state: StoredState,
 ): Promise<void> {
   await kv.put(stateKey(targetId), JSON.stringify(state), {
-    expirationTtl: 60 * 60 * 24 * 7, // 7 days
+    expirationTtl: 60 * 60 * 24 * 365, // 365 days
   });
 }
 

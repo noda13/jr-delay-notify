@@ -4,7 +4,7 @@
  */
 
 /** Area JSON endpoint keys for JR Hokkaido */
-export const AREA_ENDPOINTS: Record<string, string> = {
+export const AREA_ENDPOINTS = {
   spo: "https://www3.jrhokkaido.co.jp/webunkou/json/area/area_01.json",
   doo: "https://www3.jrhokkaido.co.jp/webunkou/json/area/area_doo.json",
   donan: "https://www3.jrhokkaido.co.jp/webunkou/json/area/area_donan.json",
