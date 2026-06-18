@@ -2,7 +2,7 @@ import { DEFAULT_TARGETS, RouteStatus, STATUS, StoredState, WatchTarget } from "
 import { buildNotificationText } from "./message";
 import { scrapeTarget } from "./scraper";
 import { readState, shouldNotify, writeState } from "./state";
-import { sendLineMessage } from "./line";
+import { LineRateLimitError, sendLineMessage } from "./line";
 
 interface TargetResult {
   id: string;
@@ -30,8 +30,13 @@ async function processTarget(
       await sendLineMessage(env.LINE_CHANNEL_ACCESS_TOKEN, text);
       notified = true;
     } catch (lineErr) {
-      console.error(`LINE notification failed for ${target.id}:`, lineErr);
-      lineFailed = true;
+      if (lineErr instanceof LineRateLimitError) {
+        // Do not set pendingNotify — retrying would exhaust monthly quota further.
+        console.error(`LINE rate limit for ${target.id}: message dropped, not retrying.`);
+      } else {
+        console.error(`LINE notification failed for ${target.id}:`, lineErr);
+        lineFailed = true;
+      }
     }
   }
 
@@ -123,21 +128,24 @@ export default {
       // outage, no re-alert is sent — the user receives a single notification. For periodic
       // re-alerting, store a timestamp in the KV error value and re-send when elapsed time
       // exceeds a threshold.
-      if (!wasInError && env.LINE_CHANNEL_ACCESS_TOKEN) {
-        const errorMsg =
-          failedTargets.length === 1
-            ? `🚨 【エラー】${failedTargets[0].target.label} の監視中にエラーが発生しました。詳細はログを確認してください。`
-            : `🚨 【エラー】${failedTargets.length}件の監視でエラーが発生しました。詳細はログを確認してください。`;
-        errorNotified = await sendLineMessage(env.LINE_CHANNEL_ACCESS_TOKEN, errorMsg)
-          .then(() => true)
-          .catch((e) => {
-            console.error("Failed to send error notification to LINE:", e);
-            return false;
-          });
+      if (!wasInError) {
+        if (!env.LINE_CHANNEL_ACCESS_TOKEN) {
+          console.error(`[jr-delay-notify] ${failedTargets.length} target(s) failed but LINE_CHANNEL_ACCESS_TOKEN is absent — alert suppressed.`);
+        } else {
+          const errorMsg =
+            failedTargets.length === 1
+              ? `🚨 【エラー】${failedTargets[0].target.label} の監視中にエラーが発生しました。詳細はログを確認してください。`
+              : `🚨 【エラー】${failedTargets.length}件の監視でエラーが発生しました。詳細はログを確認してください。`;
+          errorNotified = await sendLineMessage(env.LINE_CHANNEL_ACCESS_TOKEN, errorMsg)
+            .then(() => true)
+            .catch((e) => {
+              console.error("Failed to send error notification to LINE:", e);
+              return false;
+            });
+        }
       }
-      // Note: if LINE_CHANNEL_ACCESS_TOKEN is absent, the block above is skipped, errorNotified
-      // stays as wasInError, and the KV error-active flag is never set — alerts are suppressed
-      // entirely when the token is absent.
+      // Note: if LINE_CHANNEL_ACCESS_TOKEN is absent, the block above logs the suppression,
+      // errorNotified stays as wasInError, and the KV error-active flag is never set.
       if (errorNotified) {
         // Note: concurrent scheduled invocations could both read wasInError=false and both send
         // a notification before either write lands. KV has no compare-and-swap, so duplicate
@@ -148,9 +156,10 @@ export default {
       }
     } else if (wasInError || errorReadFailed) {
       // Clear "1" on recovery (wasInError), or attempt to clear a stale "1" that may exist
-      // when the prior read failed (errorReadFailed). Harmless if flag is already "0" or absent.
-      await env.JR_STATE.put(errorStateKey, "0", { expirationTtl: 60 * 60 * 24 }).catch((e) => {
-        console.error("Failed to persist error-active state to KV:", e);
+      // when the prior read failed (errorReadFailed). Delete is preferred over put("0") to avoid
+      // unnecessary KV writes on every recovery cycle.
+      await env.JR_STATE.delete(errorStateKey).catch((e) => {
+        console.error("Failed to clear error-active state from KV:", e);
       });
     }
   },
@@ -164,10 +173,12 @@ export default {
       }
       const provided = request.headers.get("X-Check-Secret");
       let secretMatches = false;
-      try {
-        secretMatches = !!provided && (await timingSafeStringEqual(provided, env.CHECK_SECRET));
-      } catch {
-        // fail closed: treat crypto errors as non-match
+      if (provided && provided.length <= 512) {
+        try {
+          secretMatches = await timingSafeStringEqual(provided, env.CHECK_SECRET);
+        } catch {
+          // fail closed: treat crypto errors as non-match
+        }
       }
       if (!secretMatches) {
         return new Response("Forbidden", { status: 403 });

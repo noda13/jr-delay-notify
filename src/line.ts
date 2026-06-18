@@ -1,3 +1,10 @@
+export class LineRateLimitError extends Error {
+  constructor() {
+    super("LINE API rate limit exceeded — monthly quota may be exhausted");
+    this.name = "LineRateLimitError";
+  }
+}
+
 /** Sends a broadcast message to all LINE friends of the bot. */
 export async function sendLineMessage(
   token: string,
@@ -20,6 +27,9 @@ export async function sendLineMessage(
   });
 
   if (!res.ok) {
+    if (res.status === 429) {
+      throw new LineRateLimitError();
+    }
     const body = await res.text();
     const truncatedBody = body.length > 200 ? `${body.slice(0, 200)}…` : body;
     throw new Error(

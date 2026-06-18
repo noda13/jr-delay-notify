@@ -98,9 +98,14 @@ export async function scrapeTarget(target: WatchTarget): Promise<ScrapeResult> {
           (g) => g != null && typeof g === "object" && typeof g.honbun === "string" && g.honbun.trim() !== "",
         )
       : undefined;
-    const description =
-      (gaikyoEntry ? `エリア概況: ${gaikyoEntry.honbun}` : null) ??
-      (status === 1 ? "詳細情報は公式サイトでご確認ください。" : "現在、遅れに関する情報はありません。");
+    let description: string;
+    if (gaikyoEntry) {
+      description = `エリア概況: ${gaikyoEntry.honbun}`;
+    } else if (status === 1) {
+      description = "詳細情報は公式サイトでご確認ください。";
+    } else {
+      description = "現在、遅れに関する情報はありません。";
+    }
 
     return {
       target,
