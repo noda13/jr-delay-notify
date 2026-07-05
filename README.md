@@ -63,10 +63,19 @@ wrangler secret put CHECK_SECRET   # /check エンドポイント用（任意）
 npm run deploy
 ```
 
+デプロイは手動のみ（`npm run deploy`）。CI/CD は設定していない。
+
 ### ローカル開発
 
 ```bash
 npm run dev   # wrangler dev (ローカル KV はインメモリ)
+```
+
+シークレットを使う場合は `.dev.vars`（git ignore 済み）に記述する。`wrangler dev` が自動で読み込む。
+
+```ini
+LINE_CHANNEL_ACCESS_TOKEN=your_token_here
+CHECK_SECRET=any_string
 ```
 
 ### テスト
@@ -74,6 +83,14 @@ npm run dev   # wrangler dev (ローカル KV はインメモリ)
 ```bash
 npm test
 ```
+
+### ログ確認
+
+```bash
+wrangler tail   # ライブログをリアルタイムで確認
+```
+
+Cloudflare ダッシュボードの Workers Logs（`wrangler.jsonc` で `observability.enabled: true` を設定済み）でも確認できる。
 
 ## 環境変数 / シークレット
 
