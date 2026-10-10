@@ -8,6 +8,7 @@ import worker from "../src/index";
 import { shouldNotify } from "../src/state";
 import type { StoredState, WatchTarget } from "../src/config";
 import { scrapeTarget } from "../src/scraper";
+import { sendLineMessage } from "../src/line";
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
@@ -666,5 +667,89 @@ describe("fetch handler /check integration", () => {
 		expect(kvRaw).not.toBeNull();
 		const state = JSON.parse(kvRaw!) as StoredState;
 		expect(state.pendingNotify).toBe(true);
+	});
+});
+
+describe("sendLineMessage routing", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("broadcasts without `to`", async () => {
+		const mockFetch = vi.fn().mockResolvedValue(makeLineApiResponse());
+		vi.stubGlobal("fetch", mockFetch);
+		await sendLineMessage("tok", "hi");
+		const [url, init] = mockFetch.mock.calls[0];
+		expect(url).toBe("https://api.line.me/v2/bot/message/broadcast");
+		expect(JSON.parse(init.body)).not.toHaveProperty("to");
+	});
+
+	it("uses push API with `to`", async () => {
+		const mockFetch = vi.fn().mockResolvedValue(makeLineApiResponse());
+		vi.stubGlobal("fetch", mockFetch);
+		await sendLineMessage("tok", "hi", "U123");
+		const [url, init] = mockFetch.mock.calls[0];
+		expect(url).toBe("https://api.line.me/v2/bot/message/push");
+		expect(JSON.parse(init.body).to).toBe("U123");
+	});
+});
+
+describe("scheduled heartbeat", () => {
+	const HEARTBEAT = "https://hc.example.com/ping/abc";
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	function stubFetch(jrOk: boolean) {
+		const mockFetch = vi.fn().mockImplementation((url: string) => {
+			if (String(url).includes("jrhokkaido")) {
+				return Promise.resolve(
+					jrOk
+						? makeJrApiResponse({ hakochise: 0, airport: 0 })
+						: {
+								ok: false,
+								status: 500,
+								statusText: "ERR",
+								text: () => Promise.resolve(""),
+							},
+				);
+			}
+			return Promise.resolve(makeLineApiResponse());
+		});
+		vi.stubGlobal("fetch", mockFetch);
+		return mockFetch;
+	}
+
+	const run = async (testEnv: typeof env) => {
+		await worker.scheduled(
+			{} as ScheduledController,
+			testEnv,
+			createExecutionContext(),
+		);
+	};
+
+	it("pings HEARTBEAT_URL after a fully successful run", async () => {
+		const mockFetch = stubFetch(true);
+		await run({ ...env, HEARTBEAT_URL: HEARTBEAT } as typeof env);
+		expect(mockFetch.mock.calls.some(([u]) => u === HEARTBEAT)).toBe(true);
+	});
+
+	it("does not ping when a target failed", async () => {
+		const mockFetch = stubFetch(false);
+		await run({
+			...env,
+			HEARTBEAT_URL: HEARTBEAT,
+			LINE_CHANNEL_ACCESS_TOKEN: "tok",
+		} as typeof env);
+		expect(mockFetch.mock.calls.some(([u]) => u === HEARTBEAT)).toBe(false);
+	});
+
+	it("does not ping when HEARTBEAT_URL is unset", async () => {
+		const mockFetch = stubFetch(true);
+		await run(env);
+		expect(
+			mockFetch.mock.calls.every(([u]) => String(u).includes("jrhokkaido")),
+		).toBe(true);
 	});
 });

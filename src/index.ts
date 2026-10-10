@@ -34,7 +34,7 @@ async function processTarget(
     } else {
       const text = buildNotificationText(target, result.status, result.description, result.updatedAt);
       try {
-        await sendLineMessage(env.LINE_CHANNEL_ACCESS_TOKEN, text);
+        await sendLineMessage(env.LINE_CHANNEL_ACCESS_TOKEN, text, env.LINE_TO);
         notified = true;
       } catch (lineErr) {
         if (lineErr instanceof LineRateLimitError) {
@@ -101,6 +101,14 @@ function isRecoveryEnabled(env: Env): boolean {
   return v !== "false" && v !== "0" && v !== "no";
 }
 
+async function pingHeartbeat(url: string): Promise<void> {
+  try {
+    await fetch(url, { signal: AbortSignal.timeout(10_000) });
+  } catch (e) {
+    console.error("Heartbeat ping failed:", e);
+  }
+}
+
 export default {
   async scheduled(_event: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     const notifyOnRecovery = isRecoveryEnabled(env);
@@ -144,7 +152,7 @@ export default {
             failedTargets.length === 1
               ? `🚨 【エラー】${failedTargets[0].target.label} の監視中にエラーが発生しました。詳細はログを確認してください。`
               : `🚨 【エラー】${failedTargets.length}件の監視でエラーが発生しました。詳細はログを確認してください。`;
-          errorNotified = await sendLineMessage(env.LINE_CHANNEL_ACCESS_TOKEN, errorMsg)
+          errorNotified = await sendLineMessage(env.LINE_CHANNEL_ACCESS_TOKEN, errorMsg, env.LINE_TO)
             .then(() => true)
             .catch((e) => {
               console.error("Failed to send error notification to LINE:", e);
@@ -173,6 +181,12 @@ export default {
       await env.JR_STATE.delete(errorStateKey).catch((e) => {
         console.error("Failed to clear error-active state from KV:", e);
       });
+    }
+
+    // Ping only when every target succeeded, so an external monitor also alerts on persistent
+    // scrape failures or a stopped cron — cases the LINE error alert cannot report.
+    if (failedTargets.length === 0 && env.HEARTBEAT_URL) {
+      await pingHeartbeat(env.HEARTBEAT_URL);
     }
   },
 

@@ -5,21 +5,29 @@ export class LineRateLimitError extends Error {
   }
 }
 
-/** Sends a broadcast message to all LINE friends of the bot. */
+const BROADCAST_URL = "https://api.line.me/v2/bot/message/broadcast";
+const PUSH_URL = "https://api.line.me/v2/bot/message/push";
+
+/**
+ * Sends a text message via LINE. With `to` (userId / groupId) uses the push API;
+ * without it broadcasts to all friends of the bot.
+ */
 export async function sendLineMessage(
   token: string,
   text: string,
+  to?: string,
 ): Promise<void> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 10_000);
   try {
-    const res = await fetch("https://api.line.me/v2/bot/message/broadcast", {
+    const res = await fetch(to ? PUSH_URL : BROADCAST_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
+        ...(to ? { to } : {}),
         messages: [
           {
             type: "text",
