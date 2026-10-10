@@ -2,7 +2,7 @@
 
 JR北海道の列車遅延情報を監視し、運行状況の変化をLINEに通知するCloudflare Worker。
 
-平日の通勤時間帯（朝6〜9時・夜14〜20時）に5分ごとにポーリングし、遅延発生・復旧を検知したタイミングでLINEブロードキャストを送信する。
+平日の通勤時間帯（朝6〜9時・午後14〜20時）に5分ごとにポーリングし、遅延発生・復旧を検知したタイミングでLINEブロードキャストを送信する。
 
 ## アーキテクチャ
 
@@ -15,7 +15,7 @@ Cloudflare Workers (Cron Trigger)
   └─ config.ts    … 監視対象・エンドポイント定義
 ```
 
-状態は `JR_STATE` KV Namespace に JSON で保管される（TTL 365日）。ステータスが変化したときのみ KV 書き込みが発生する（無料枠節約）。
+状態は `JR_STATE` KV Namespace に JSON で保管される（TTL 365日）。状態（ステータス・概況テキスト・通知フラグ）が変化したときのみ KV 書き込みが発生する（無料枠節約）。
 
 ## 監視対象（デフォルト）
 
@@ -32,7 +32,7 @@ Cloudflare Workers (Cron Trigger)
 |---|---|---|
 | `*/5 21-23 * * 0-4` | 月〜金 06:00〜08:59 | 朝の通勤 |
 | `0 0 * * 1-5` | 月〜金 09:00 | 朝の通勤終了 |
-| `*/5 5-10 * * 1-5` | 月〜金 14:00〜19:59 | 夜の通勤 |
+| `*/5 5-10 * * 1-5` | 月〜金 14:00〜19:59 | 帰りの通勤 |
 
 > JST 09:01〜13:59 は意図的に対象外（昼間ギャップ）。
 
@@ -40,7 +40,7 @@ Cloudflare Workers (Cron Trigger)
 
 ### 前提
 
-- Node.js 18+
+- Node.js 20+
 - Wrangler CLI (`npm install -g wrangler`)
 - Cloudflare アカウント
 - LINE Messaging API チャンネル（ブロードキャスト権限）
@@ -63,7 +63,7 @@ wrangler secret put CHECK_SECRET   # /check エンドポイント用（任意）
 npm run deploy
 ```
 
-デプロイは手動のみ（`npm run deploy`）。CI/CD は設定していない。
+デプロイは手動のみ（`npm run deploy`）。CI（GitHub Actions）ではテストと `wrangler deploy --dry-run` によるビルド確認、型チェックのみ実行する。
 
 ### ローカル開発
 
