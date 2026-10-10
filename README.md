@@ -58,6 +58,8 @@ wrangler kv namespace create JR_STATE --preview
 # 3. シークレットを登録
 wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
 wrangler secret put CHECK_SECRET   # /check エンドポイント用（任意）
+wrangler secret put LINE_TO        # push 送信先の userId/groupId（任意）
+wrangler secret put HEARTBEAT_URL  # 死活監視用 ping URL（任意）
 
 # 4. デプロイ
 npm run deploy
@@ -98,7 +100,15 @@ Cloudflare ダッシュボードの Workers Logs（`wrangler.jsonc` で `observa
 |---|---|---|---|
 | `LINE_CHANNEL_ACCESS_TOKEN` | Secret | ✅ | LINE チャンネルアクセストークン |
 | `CHECK_SECRET` | Secret | | `/check` エンドポイントの認証トークン |
+| `LINE_TO` | Secret | | 送信先の userId / groupId。設定すると push API で宛先を絞って送る（未設定時は友だち全員へ broadcast） |
+| `HEARTBEAT_URL` | Secret | | 全ターゲットが成功した cron 実行のたびに GET する URL（Healthchecks.io など）。停止検知用 |
 | `NOTIFY_ON_RECOVERY` | Var | | `"false"` で復旧通知を無効化（デフォルト: `true`） |
+
+## 死活監視（Heartbeat）
+
+`HEARTBEAT_URL` を設定すると、全ターゲットの取得に成功した cron 実行の末尾でその URL に GET を送る。cron の停止や、取得失敗が続く状態を外部の監視サービス側で検知できる。
+
+監視側の期間は cron の稼働時間帯に合わせる。平日の通勤時間帯のみ動くため、週末や昼間ギャップ（JST 09:01〜13:59）に ping が来なくても誤報にならないよう、期待間隔と猶予時間を広めに設定する。
 
 ## HTTP エンドポイント
 

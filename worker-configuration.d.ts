@@ -6,4 +6,8 @@ interface Env {
   NOTIFY_ON_RECOVERY: string;
   /** Optional secret for the /check HTTP trigger — if set, X-Check-Secret header must match */
   CHECK_SECRET?: string;
+  /** Optional LINE userId / groupId. If set, notifications use the push API instead of broadcast */
+  LINE_TO?: string;
+  /** Optional URL pinged after each fully successful scheduled run (dead man's switch) */
+  HEARTBEAT_URL?: string;
 }
