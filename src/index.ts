@@ -30,8 +30,7 @@ async function processTarget(
   if (sendWanted) {
     if (!env.LINE_CHANNEL_ACCESS_TOKEN) {
       console.error(`[jr-delay-notify] LINE_CHANNEL_ACCESS_TOKEN is absent — notification skipped for ${target.id}. Check wrangler secrets.`);
-      // Note: lineFailed is NOT set here — a missing token is a misconfiguration, not a transient
-      // network failure, so retrying via pendingNotify=true would just spam the log.
+      // lineFailed is intentionally not set: a missing token is a misconfiguration, not transient.
     } else {
       const text = buildNotificationText(target, result.status, result.description, result.updatedAt);
       try {
@@ -39,9 +38,7 @@ async function processTarget(
         notified = true;
       } catch (lineErr) {
         if (lineErr instanceof LineRateLimitError) {
-          // Set lineFailed so pendingNotify=true is stored — ensures the notification is
-          // retried on the next run rather than permanently dropped. If the monthly quota
-          // is exhausted, subsequent retries will also return 429 until quota resets.
+          // Retries return 429 until the monthly quota resets.
           console.error(`LINE rate limit for ${target.id}: will retry on next run.`);
           lineFailed = true;
         } else {
@@ -56,12 +53,9 @@ async function processTarget(
     status: result.status,
     ...(notified ? { notifiedAt: new Date().toISOString() } : (result.status === STATUS.DISRUPTED && previous?.notifiedAt) ? { notifiedAt: previous.notifiedAt } : {}),
     description: result.description,
-    // pendingNotify=true when the LINE send failed (lineFailed=true), so the notification is retried
-    // on the next run rather than permanently dropped.
     pendingNotify: lineFailed,
   };
-  // Skip KV write when state is identical to previous to conserve free-tier write quota.
-  // Compare all fields; treat undefined pendingNotify/notifiedAt as their false/absent equivalents.
+  // Skip identical writes to conserve free-tier KV write quota.
   const stateChanged = previous === null
     || previous.status !== newState.status
     || previous.description !== newState.description
