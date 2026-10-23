@@ -42,16 +42,15 @@ export async function readState(
 
 /**
  * Writes the current state to KV.
- * Uses 365-day TTL to auto-clean stale entries.
+ * No TTL: unchanged states are never rewritten, so an expiring entry would silently turn the
+ * next run into a "first run" and drop a notification.
  */
 export async function writeState(
   kv: KVNamespace,
   targetId: string,
   state: StoredState,
 ): Promise<void> {
-  await kv.put(stateKey(targetId), JSON.stringify(state), {
-    expirationTtl: 60 * 60 * 24 * 365, // 365 days
-  });
+  await kv.put(stateKey(targetId), JSON.stringify(state));
 }
 
 /**

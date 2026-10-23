@@ -808,3 +808,72 @@ describe("scheduled heartbeat", () => {
 		expect(mockFetch.mock.calls.some(([u]) => u === HEARTBEAT)).toBe(true);
 	});
 });
+
+describe("review fixes", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("missing token keeps pendingNotify=true so heartbeat stays silent on later runs", async () => {
+		for (const id of ["hakodate-sapporo", "spo-airport"]) {
+			await env.JR_STATE.put(
+				`state:${id}`,
+				JSON.stringify({ status: 0, description: "Normal" }),
+			);
+		}
+		const mockFetch = vi.fn().mockImplementation((url: string) =>
+			Promise.resolve(
+				String(url).includes("jrhokkaido")
+					? makeJrApiResponse({ hakochise: 1, airport: 0 })
+					: makeLineApiResponse(),
+			),
+		);
+		vi.stubGlobal("fetch", mockFetch);
+		const testEnv = {
+			...env,
+			HEARTBEAT_URL: "https://hc.example.com/ping/abc",
+			LINE_CHANNEL_ACCESS_TOKEN: "",
+		} as typeof env;
+
+		for (let i = 0; i < 2; i++) {
+			await worker.scheduled(
+				{} as ScheduledController,
+				testEnv,
+				createExecutionContext(),
+			);
+		}
+
+		const state = JSON.parse(
+			(await env.JR_STATE.get("state:hakodate-sapporo"))!,
+		) as StoredState;
+		expect(state.pendingNotify).toBe(true);
+		expect(
+			mockFetch.mock.calls.some(([u]) => u === "https://hc.example.com/ping/abc"),
+		).toBe(false);
+	});
+
+	it("POST /check returns 405 before authentication", async () => {
+		const request = new IncomingRequest("http://example.com/check", {
+			method: "POST",
+			headers: { "X-Check-Secret": "test-secret" },
+		});
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(
+			request,
+			{ ...env, CHECK_SECRET: "test-secret" } as typeof env,
+			ctx,
+		);
+		await waitOnExecutionContext(ctx);
+		expect(response.status).toBe(405);
+		expect(response.headers.get("Allow")).toBe("GET");
+	});
+
+	it("sendLineMessage truncates text over 5000 characters", async () => {
+		const mockFetch = vi.fn().mockResolvedValue(makeLineApiResponse());
+		vi.stubGlobal("fetch", mockFetch);
+		await sendLineMessage("tok", "あ".repeat(6000));
+		const sent = JSON.parse(mockFetch.mock.calls[0][1].body).messages[0].text;
+		expect(sent).toHaveLength(5000);
+		expect(sent.endsWith("…")).toBe(true);
+	});
+});

@@ -1,0 +1,4 @@
+LINE_CHANNEL_ACCESS_TOKEN=your_token_here
+CHECK_SECRET=any_string
+# LINE_TO=Uxxxxxxxx   # push 送信先（未設定なら broadcast）
+# HEARTBEAT_URL=https://hc-ping.com/xxxx

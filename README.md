@@ -15,7 +15,7 @@ Cloudflare Workers (Cron Trigger)
   └─ config.ts    … 監視対象・エンドポイント定義
 ```
 
-状態は `JR_STATE` KV Namespace に JSON で保管される（TTL 365日）。状態（ステータス・概況テキスト・通知フラグ）が変化したときのみ KV 書き込みが発生する（無料枠節約）。
+状態は `JR_STATE` KV Namespace に JSON で保管される（TTL なし）。状態（ステータス・概況テキスト・通知フラグ）が変化したときのみ KV 書き込みが発生する（無料枠節約）。
 
 ## 監視対象（デフォルト）
 
@@ -75,15 +75,20 @@ npm run dev   # wrangler dev (ローカル KV はインメモリ)
 
 シークレットを使う場合は `.dev.vars`（git ignore 済み）に記述する。`wrangler dev` が自動で読み込む。
 
+`.dev.vars.example` をコピーして使う。
+
 ```ini
 LINE_CHANNEL_ACCESS_TOKEN=your_token_here
 CHECK_SECRET=any_string
 ```
 
+`worker-configuration.d.ts` はシークレットの型を含むため手書きで管理している。`wrangler types` で再生成しない。
+
 ### テスト
 
 ```bash
-npm test
+npm test        # ウォッチモード
+npm run test:run # 1回だけ実行（CI 向け）
 ```
 
 ### ログ確認
