@@ -752,4 +752,59 @@ describe("scheduled heartbeat", () => {
 			mockFetch.mock.calls.every(([u]) => String(u).includes("jrhokkaido")),
 		).toBe(true);
 	});
+
+	async function seedNormal() {
+		for (const id of ["hakodate-sapporo", "spo-airport"]) {
+			await env.JR_STATE.put(
+				`state:${id}`,
+				JSON.stringify({ status: 0, description: "Normal" }),
+			);
+		}
+	}
+
+	function stubDisruptedWithLine(lineResponse: unknown) {
+		const mockFetch = vi.fn().mockImplementation((url: string) => {
+			if (String(url).includes("jrhokkaido")) {
+				return Promise.resolve(
+					makeJrApiResponse({ hakochise: 1, airport: 0 }),
+				);
+			}
+			return Promise.resolve(lineResponse);
+		});
+		vi.stubGlobal("fetch", mockFetch);
+		return mockFetch;
+	}
+
+	it("does not ping when a wanted LINE notification fails", async () => {
+		await seedNormal();
+		const mockFetch = stubDisruptedWithLine(makeLineRateLimitResponse());
+		await run({
+			...env,
+			HEARTBEAT_URL: HEARTBEAT,
+			LINE_CHANNEL_ACCESS_TOKEN: "tok",
+		} as typeof env);
+		expect(mockFetch.mock.calls.some(([u]) => u === HEARTBEAT)).toBe(false);
+	});
+
+	it("does not ping when a notification is wanted but the token is missing", async () => {
+		await seedNormal();
+		const mockFetch = stubDisruptedWithLine(makeLineApiResponse());
+		await run({
+			...env,
+			HEARTBEAT_URL: HEARTBEAT,
+			LINE_CHANNEL_ACCESS_TOKEN: "",
+		} as typeof env);
+		expect(mockFetch.mock.calls.some(([u]) => u === HEARTBEAT)).toBe(false);
+	});
+
+	it("pings when a wanted LINE notification succeeds", async () => {
+		await seedNormal();
+		const mockFetch = stubDisruptedWithLine(makeLineApiResponse());
+		await run({
+			...env,
+			HEARTBEAT_URL: HEARTBEAT,
+			LINE_CHANNEL_ACCESS_TOKEN: "tok",
+		} as typeof env);
+		expect(mockFetch.mock.calls.some(([u]) => u === HEARTBEAT)).toBe(true);
+	});
 });

@@ -10,6 +10,8 @@ interface TargetResult {
   status: RouteStatus | -1;
   description: string;
   notified: boolean;
+  /** true when a wanted notification could not be delivered (send error or missing token) */
+  sendFailed: boolean;
 }
 
 // scrapeTarget (fetch non-2xx, JSON parse, unknown senkuKey) and readState (KV.get) can throw.
@@ -26,11 +28,13 @@ async function processTarget(
 
   let notified = false;
   let lineFailed = false;
+  let sendFailed = false;
   const sendWanted = notify && !(result.status === STATUS.NORMAL && !notifyOnRecovery);
   if (sendWanted) {
     if (!env.LINE_CHANNEL_ACCESS_TOKEN) {
       console.error(`[jr-delay-notify] LINE_CHANNEL_ACCESS_TOKEN is absent — notification skipped for ${target.id}. Check wrangler secrets.`);
       // lineFailed is intentionally not set: a missing token is a misconfiguration, not transient.
+      sendFailed = true;
     } else {
       const text = buildNotificationText(target, result.status, result.description, result.updatedAt);
       try {
@@ -41,9 +45,11 @@ async function processTarget(
           // Retries return 429 until the monthly quota resets.
           console.error(`LINE rate limit for ${target.id}: will retry on next run.`);
           lineFailed = true;
+          sendFailed = true;
         } else {
           console.error(`LINE notification failed for ${target.id}:`, lineErr);
           lineFailed = true;
+          sendFailed = true;
         }
       }
     }
@@ -73,7 +79,7 @@ async function processTarget(
     }
   }
 
-  return { id: target.id, label: target.label, status: result.status, description: result.description, notified };
+  return { id: target.id, label: target.label, status: result.status, description: result.description, notified, sendFailed };
 }
 
 async function timingSafeStringEqual(a: string, b: string): Promise<boolean> {
@@ -183,9 +189,11 @@ export default {
       });
     }
 
-    // Ping only when every target succeeded, so an external monitor also alerts on persistent
-    // scrape failures or a stopped cron — cases the LINE error alert cannot report.
-    if (failedTargets.length === 0 && env.HEARTBEAT_URL) {
+    // Ping only when every target succeeded and every wanted notification was delivered, so an
+    // external monitor also alerts on persistent scrape failures, LINE delivery failures
+    // (e.g. expired token) or a stopped cron — cases the LINE error alert cannot report.
+    const sendFailed = settled.some((r) => r.status === "fulfilled" && r.value.sendFailed);
+    if (failedTargets.length === 0 && !sendFailed && env.HEARTBEAT_URL) {
       await pingHeartbeat(env.HEARTBEAT_URL);
     }
   },
@@ -229,6 +237,7 @@ export default {
           status: -1,
           description: "internal error",
           notified: false,
+          sendFailed: false,
         };
       });
 
