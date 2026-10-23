@@ -91,6 +91,23 @@ npm test        # ウォッチモード
 npm run test:run # 1回だけ実行（CI 向け）
 ```
 
+### push 前のチェック
+
+```bash
+npm run check   # 型チェック → テスト → wrangler deploy --dry-run
+```
+
+CI は手動実行のため、push 前にローカルで `npm run check` を実行する。
+
+### cron のローカル確認
+
+```bash
+npx wrangler dev --test-scheduled
+curl "http://localhost:8787/__scheduled"   # scheduled ハンドラを1回実行
+```
+
+ローカル KV はインメモリで、LINE の通知先は `.dev.vars` の値が使われる。実際に通知が飛ぶので、`LINE_TO` で自分宛てに絞るか、`LINE_CHANNEL_ACCESS_TOKEN` を未設定にしておく。
+
 ### ログ確認
 
 ```bash
