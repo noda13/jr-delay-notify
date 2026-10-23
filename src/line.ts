@@ -7,6 +7,7 @@ export class LineRateLimitError extends Error {
 
 const BROADCAST_URL = "https://api.line.me/v2/bot/message/broadcast";
 const PUSH_URL = "https://api.line.me/v2/bot/message/push";
+const MAX_TEXT_LENGTH = 5000;
 
 /**
  * Sends a text message via LINE. With `to` (userId / groupId) uses the push API;
@@ -31,7 +32,7 @@ export async function sendLineMessage(
         messages: [
           {
             type: "text",
-            text,
+            text: text.length > MAX_TEXT_LENGTH ? `${text.slice(0, MAX_TEXT_LENGTH - 1)}…` : text,
           },
         ],
       }),

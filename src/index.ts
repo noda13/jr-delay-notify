@@ -33,7 +33,9 @@ async function processTarget(
   if (sendWanted) {
     if (!env.LINE_CHANNEL_ACCESS_TOKEN) {
       console.error(`[jr-delay-notify] LINE_CHANNEL_ACCESS_TOKEN is absent — notification skipped for ${target.id}. Check wrangler secrets.`);
-      // lineFailed is intentionally not set: a missing token is a misconfiguration, not transient.
+      // Retry via pendingNotify so sendFailed persists across runs and the heartbeat stays silent
+      // until the token is configured.
+      lineFailed = true;
       sendFailed = true;
     } else {
       const text = buildNotificationText(target, result.status, result.description, result.updatedAt);
@@ -41,16 +43,11 @@ async function processTarget(
         await sendLineMessage(env.LINE_CHANNEL_ACCESS_TOKEN, text, env.LINE_TO);
         notified = true;
       } catch (lineErr) {
-        if (lineErr instanceof LineRateLimitError) {
-          // Retries return 429 until the monthly quota resets.
-          console.error(`LINE rate limit for ${target.id}: will retry on next run.`);
-          lineFailed = true;
-          sendFailed = true;
-        } else {
-          console.error(`LINE notification failed for ${target.id}:`, lineErr);
-          lineFailed = true;
-          sendFailed = true;
-        }
+        // Rate-limit retries keep returning 429 until the monthly quota resets.
+        const reason = lineErr instanceof LineRateLimitError ? "LINE rate limit" : "LINE notification failed";
+        console.error(`${reason} for ${target.id}:`, lineErr);
+        lineFailed = true;
+        sendFailed = true;
       }
     }
   }
@@ -202,6 +199,9 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/check") {
+      if (request.method !== "GET") {
+        return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET" } });
+      }
       if (!env.CHECK_SECRET) {
         return new Response("Forbidden", { status: 403 });
       }
