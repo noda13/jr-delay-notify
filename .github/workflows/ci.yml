@@ -22,29 +22,3 @@ jobs:
         run: npm test
       - name: Build check (wrangler dry-run)
         run: npx wrangler deploy --dry-run
-
-  deploy:
-    if: github.event_name == 'push'
-    needs: check
-    runs-on: ubuntu-latest
-    concurrency:
-      group: deploy
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci
-      - name: Inject KV namespace id
-        env:
-          KV_NAMESPACE_ID: ${{ vars.KV_NAMESPACE_ID }}
-        run: |
-          test -n "$KV_NAMESPACE_ID" || { echo "vars.KV_NAMESPACE_ID is not set"; exit 1; }
-          sed -i "s/REPLACE_WITH_KV_ID/$KV_NAMESPACE_ID/" wrangler.jsonc
-      - name: Deploy
-        run: npx wrangler deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

@@ -65,17 +65,7 @@ wrangler secret put HEARTBEAT_URL  # 死活監視用 ping URL（任意）
 npm run deploy
 ```
 
-main への push で GitHub Actions がテスト・型チェック・dry-run の後に自動デプロイする。手動デプロイは `npm run deploy`。
-
-自動デプロイには GitHub の設定が必要。
-
-| 種別 | 名前 | 内容 |
-|---|---|---|
-| Secret | `CLOUDFLARE_API_TOKEN` | Workers の編集権限を持つ API トークン |
-| Secret | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare アカウント ID |
-| Variable | `KV_NAMESPACE_ID` | `JR_STATE` の KV namespace id（デプロイ時に `wrangler.jsonc` のプレースホルダーを置換する） |
-
-`LINE_CHANNEL_ACCESS_TOKEN` などの Worker 用シークレットは Cloudflare 側に登録済みのものが使われる。
+デプロイは手動のみ（`npm run deploy`）。GitHub Actions の CI は Actions の使用量を抑えるため手動実行（`workflow_dispatch`）で、型チェック・テスト・`wrangler deploy --dry-run` によるビルド確認を行う。
 
 ### ローカル開発
 
