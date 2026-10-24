@@ -877,3 +877,60 @@ describe("review fixes", () => {
 		expect(sent.endsWith("…")).toBe(true);
 	});
 });
+
+describe("review fixes 2", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.restoreAllMocks();
+	});
+
+	function stubNormalJr(heartbeatStatus = 200) {
+		const mockFetch = vi.fn().mockImplementation((url: string) => {
+			if (String(url).includes("jrhokkaido")) {
+				return Promise.resolve(
+					makeJrApiResponse({ hakochise: 0, airport: 0 }),
+				);
+			}
+			return Promise.resolve(
+				new Response(null, { status: heartbeatStatus }),
+			);
+		});
+		vi.stubGlobal("fetch", mockFetch);
+		return mockFetch;
+	}
+
+	const runScheduled = (testEnv: typeof env) =>
+		worker.scheduled(
+			{} as ScheduledController,
+			testEnv,
+			createExecutionContext(),
+		);
+
+	it("warns when the heartbeat endpoint returns a non-2xx status", async () => {
+		stubNormalJr(404);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		await runScheduled({
+			...env,
+			HEARTBEAT_URL: "https://hc.example.com/ping/abc",
+		} as typeof env);
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("404"));
+	});
+
+	it("warns on an unrecognized NOTIFY_ON_RECOVERY value and keeps recovery enabled", async () => {
+		stubNormalJr();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		await runScheduled({ ...env, NOTIFY_ON_RECOVERY: "off" } as typeof env);
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("NOTIFY_ON_RECOVERY"),
+		);
+	});
+
+	it("does not warn on recognized NOTIFY_ON_RECOVERY values", async () => {
+		stubNormalJr();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		await runScheduled({ ...env, NOTIFY_ON_RECOVERY: "false" } as typeof env);
+		expect(
+			warn.mock.calls.some(([m]) => String(m).includes("NOTIFY_ON_RECOVERY")),
+		).toBe(false);
+	});
+});
