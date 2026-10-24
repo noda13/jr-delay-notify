@@ -70,7 +70,7 @@ npm run deploy
 ### ローカル開発
 
 ```bash
-npm run dev   # wrangler dev (ローカル KV はインメモリ)
+npm run dev   # wrangler dev (ローカル KV は .wrangler/state に永続化される)
 ```
 
 シークレットを使う場合は `.dev.vars`（git ignore 済み）に記述する。`wrangler dev` が自動で読み込む。
@@ -106,7 +106,7 @@ npx wrangler dev --test-scheduled
 curl "http://localhost:8787/__scheduled"   # scheduled ハンドラを1回実行
 ```
 
-ローカル KV はインメモリで、LINE の通知先は `.dev.vars` の値が使われる。実際に通知が飛ぶので、`LINE_TO` で自分宛てに絞るか、`LINE_CHANNEL_ACCESS_TOKEN` を未設定にしておく。
+ローカル KV は `.wrangler/state` に残るので、前回の状態が引き継がれる。発火させたい場合は `wrangler kv key put --binding JR_STATE --local ...` で状態を仕込む。LINE の通知先は `.dev.vars` の値が使われる。実際に通知が飛ぶので、`LINE_TO` で自分宛てに絞るか、`LINE_CHANNEL_ACCESS_TOKEN` を未設定にしておく。
 
 ### ログ確認
 
@@ -125,6 +125,10 @@ Cloudflare ダッシュボードの Workers Logs（`wrangler.jsonc` で `observa
 | `LINE_TO` | Secret | | 送信先の userId / groupId。設定すると push API で宛先を絞って送る（未設定時は友だち全員へ broadcast） |
 | `HEARTBEAT_URL` | Secret | | 全ターゲットが成功した cron 実行のたびに GET する URL（Healthchecks.io など）。停止検知用 |
 | `NOTIFY_ON_RECOVERY` | Var | | `"false"` で復旧通知を無効化（デフォルト: `true`） |
+
+## 初回実行の挙動
+
+KV に状態がない最初の実行は、通知せずに現在の状態を保存するだけ。デプロイ直後や KV を作り直した直後に遅延が起きていると、その遅延は通知されない。
 
 ## 死活監視（Heartbeat）
 
