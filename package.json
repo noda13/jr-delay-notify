@@ -2,6 +2,7 @@
 	"name": "jr-delay-notify",
 	"version": "0.0.0",
 	"private": true,
+	"packageManager": "pnpm@10.34.4",
 	"scripts": {
 		"deploy": "wrangler deploy",
 		"dev": "wrangler dev",
