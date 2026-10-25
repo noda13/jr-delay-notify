@@ -13,14 +13,14 @@
     }
   ],
   // Cron schedules are in UTC (Cloudflare requirement). JST = UTC+9.
-  // Day-of-week note: the morning block uses DOW 0-4 (UTC Sun-Thu) because UTC 21:xx wraps
-  // to the *next* calendar day in JST (e.g. Sun 21:xx UTC = Mon 06:xx JST, Thu 23:xx UTC = Fri 08:xx JST).
-  // The evening block uses DOW 1-5 (UTC Mon-Fri) because 05:xx-10:xx UTC does NOT cross midnight in JST.
+  // Cloudflare cron uses named weekdays to avoid numeric DOW ambiguity.
+  // The morning block's UTC Sunday-Thursday runs on Monday-Friday morning in JST.
+  // UTC Monday-Friday 00:00 and 05:00-10:59 are also Monday-Friday in JST.
   "triggers": {
     "crons": [
-      "*/5 21-23 * * 0-4", // UTC Sun-Thu 21:00-23:59 = JST Mon-Fri 06:00-08:59 (morning commute)
-      "0 0 * * 1-5",        // UTC Mon-Fri 00:00       = JST Mon-Fri 09:00       (morning commute end)
-      "*/5 5-10 * * 1-5"   // UTC Mon-Fri 05:00-10:59 = JST Mon-Fri 14:00-19:59 (evening commute)
+      "*/5 21-23 * * SUN-THU", // UTC Sun-Thu 21:00-23:59 = JST Mon-Fri 06:00-08:59 (morning commute)
+      "0 0 * * MON-FRI", // UTC Mon-Fri 00:00       = JST Mon-Fri 09:00       (morning commute end)
+      "*/5 5-10 * * MON-FRI" // UTC Mon-Fri 05:00-10:59 = JST Mon-Fri 14:00-19:59 (evening commute)
     ]
     // Note: JST 09:01–13:59 is intentionally not covered (midday gap).
     // A disruption that clears mid-morning won't trigger a recovery notice until 14:00.
