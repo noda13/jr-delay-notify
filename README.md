@@ -41,7 +41,7 @@ Cloudflare Workers (Cron Trigger)
 ### 前提
 
 - Node.js 20+
-- Wrangler CLI (`npm install -g wrangler`)
+- pnpm 10.34.4（Corepack 等で有効化）
 - Cloudflare アカウント
 - LINE Messaging API チャンネル（ブロードキャスト権限）
 
@@ -49,28 +49,28 @@ Cloudflare Workers (Cron Trigger)
 
 ```bash
 # 1. 依存インストール
-npm install
+pnpm install
 
 # 2. KV Namespace を作成し、wrangler.jsonc の id/preview_id を更新
-wrangler kv namespace create JR_STATE
-wrangler kv namespace create JR_STATE --preview
+pnpm exec wrangler kv namespace create JR_STATE
+pnpm exec wrangler kv namespace create JR_STATE --preview
 
 # 3. シークレットを登録
-wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
-wrangler secret put CHECK_SECRET   # /check エンドポイント用（任意）
-wrangler secret put LINE_TO        # push 送信先の userId/groupId（任意）
-wrangler secret put HEARTBEAT_URL  # 死活監視用 ping URL（任意）
+pnpm exec wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
+pnpm exec wrangler secret put CHECK_SECRET   # /check エンドポイント用（任意）
+pnpm exec wrangler secret put LINE_TO        # push 送信先の userId/groupId（任意）
+pnpm exec wrangler secret put HEARTBEAT_URL  # 死活監視用 ping URL（任意）
 
 # 4. デプロイ
-npm run deploy
+pnpm run deploy
 ```
 
-デプロイは手動のみ（`npm run deploy`）。GitHub Actions の CI は Actions の使用量を抑えるため手動実行（`workflow_dispatch`）で、型チェック・テスト・`wrangler deploy --dry-run` によるビルド確認を行う。
+デプロイは手動のみ（`pnpm run deploy`）。GitHub Actions の CI は Actions の使用量を抑えるため手動実行（`workflow_dispatch`）で、型チェック・テスト・`wrangler deploy --dry-run` によるビルド確認を行う。
 
 ### ローカル開発
 
 ```bash
-npm run dev   # wrangler dev (ローカル KV は .wrangler/state に永続化される)
+pnpm run dev   # wrangler dev (ローカル KV は .wrangler/state に永続化される)
 ```
 
 シークレットを使う場合は `.dev.vars`（git ignore 済み）に記述する。`wrangler dev` が自動で読み込む。
@@ -87,31 +87,32 @@ CHECK_SECRET=any_string
 ### テスト
 
 ```bash
-npm test        # ウォッチモード
-npm run test:run # 1回だけ実行（CI 向け）
+pnpm test          # ウォッチモード
+pnpm run test:run  # 1回だけ実行（CI 向け）
+pnpm run typecheck # TypeScript 型チェック
 ```
 
 ### push 前のチェック
 
 ```bash
-npm run check   # 型チェック → テスト → wrangler deploy --dry-run
+pnpm run check   # 型チェック → テスト → wrangler deploy --dry-run
 ```
 
-CI は手動実行のため、push 前にローカルで `npm run check` を実行する。
+CI は手動実行のため、push 前にローカルで `pnpm run check` を実行する。
 
 ### cron のローカル確認
 
 ```bash
-npx wrangler dev --test-scheduled
+pnpm exec wrangler dev --test-scheduled
 curl "http://localhost:8787/__scheduled"   # scheduled ハンドラを1回実行
 ```
 
-ローカル KV は `.wrangler/state` に残るので、前回の状態が引き継がれる。発火させたい場合は `wrangler kv key put --binding JR_STATE --local ...` で状態を仕込む。LINE の通知先は `.dev.vars` の値が使われる。実際に通知が飛ぶので、`LINE_TO` で自分宛てに絞るか、`LINE_CHANNEL_ACCESS_TOKEN` を未設定にしておく。
+ローカル KV は `.wrangler/state` に残るので、前回の状態が引き継がれる。発火させたい場合は `pnpm exec wrangler kv key put --binding JR_STATE --local ...` で状態を仕込む。LINE の通知先は `.dev.vars` の値が使われる。実際に通知が飛ぶので、`LINE_TO` で自分宛てに絞るか、`LINE_CHANNEL_ACCESS_TOKEN` を未設定にしておく。
 
 ### ログ確認
 
 ```bash
-wrangler tail   # ライブログをリアルタイムで確認
+pnpm exec wrangler tail   # ライブログをリアルタイムで確認
 ```
 
 Cloudflare ダッシュボードの Workers Logs（`wrangler.jsonc` で `observability.enabled: true` を設定済み）でも確認できる。
