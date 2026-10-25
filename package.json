@@ -9,7 +9,8 @@
 		"start": "wrangler dev",
 		"test": "vitest",
 		"test:run": "vitest run",
-		"check": "tsc --noEmit && vitest run && wrangler deploy --dry-run"
+		"typecheck": "tsc --noEmit",
+		"check": "pnpm run typecheck && pnpm run test:run && pnpm exec wrangler deploy --dry-run"
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-pool-workers": "^0.12.4",

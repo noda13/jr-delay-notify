@@ -1,41 +1,26 @@
 import { AREA_ENDPOINTS, RouteStatus, WatchTarget } from "./config";
 
-/** One entry in the gaikyo (概況) array */
-export interface GaikyoEntry {
-  time: string;
-  title: string;
-  honbun: string;
-}
-
 /** Parsed result for a single WatchTarget */
 export interface ScrapeResult {
   target: WatchTarget;
   status: RouteStatus;
-  /** Text from gaikyo[0].honbun describing the current situation */
   description: string;
-  /** Raw "time" string from JSON, e.g. "2026年06月18日 11時30分現在" */
   updatedAt: string;
 }
 
-/** Raw structure of the JR Hokkaido area JSON (only consumed fields) */
 interface AreaJson {
-  time: string;
+  time?: string;
   today: {
     senkuStatus: Record<string, number>;
-    gaikyo: GaikyoEntry[];
+    gaikyo: unknown[];
   };
 }
 
-/**
- * Fetches the JR Hokkaido area JSON and extracts the status for the given target.
- * Throws if the fetch fails or the JSON is malformed.
- */
-export async function scrapeTarget(target: WatchTarget): Promise<ScrapeResult> {
-  const url = AREA_ENDPOINTS[target.areaKey];
-  if (!url) {
-    throw new Error(`Unknown areaKey: ${target.areaKey}`);
-  }
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
+async function fetchAreaJson(url: string, targetId: string): Promise<AreaJson> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 15_000);
   try {
@@ -51,59 +36,101 @@ export async function scrapeTarget(target: WatchTarget): Promise<ScrapeResult> {
       throw new Error(`Fetch failed: ${res.status} ${res.statusText} for ${url}`);
     }
 
-    // JR Hokkaido serves JSON with a UTF-8 BOM — strip it before parsing
-    const raw = await res.text();
-    const stripped = raw.replace(/^\uFEFF/, "");
-    let json: AreaJson;
+    // JR Hokkaido serves JSON with a UTF-8 BOM — strip it before parsing.
+    const raw = (await res.text()).replace(/^\uFEFF/, "");
+    let parsed: unknown;
     try {
-      json = JSON.parse(stripped) as AreaJson;
+      parsed = JSON.parse(raw);
     } catch {
-      throw new Error(`Failed to parse JSON for target "${target.id}" (url: ${url}). Response may be non-JSON (maintenance page?)`);
+      throw new Error(`Failed to parse JSON for target "${targetId}" (url: ${url}). Response may be non-JSON (maintenance page?)`);
     }
 
-    if (typeof json.today?.senkuStatus !== "object" || json.today.senkuStatus === null) {
-      throw new Error(`Unexpected senkuStatus shape for target "${target.id}" — API structure may have changed.`);
+    if (!isRecord(parsed) || !isRecord(parsed.today)) {
+      throw new Error(`Unexpected response shape for target "${targetId}" — API structure may have changed.`);
     }
-
-    const rawStatus = json.today?.senkuStatus?.[target.senkuKey];
-    if (rawStatus === undefined) {
-      throw new Error(`senkuKey "${target.senkuKey}" not found in senkuStatus for target "${target.id}". API structure may have changed.`);
+    const senkuStatus = parsed.today.senkuStatus;
+    if (!isRecord(senkuStatus)) {
+      throw new Error(`Unexpected senkuStatus shape for target "${targetId}" — API structure may have changed.`);
     }
-    let status: RouteStatus;
-    if (rawStatus === 0) {
-      status = 0;
-    } else if (rawStatus === 1) {
-      status = 1;
-    } else {
-      // Fail-safe: treat any unknown code as DISRUPTED to avoid missing real disruptions.
-      console.warn(`[jr-delay-notify] Unexpected senkuStatus value ${rawStatus} for target "${target.id}" — treating as DISRUPTED.`);
-      status = 1;
+    if (parsed.today.gaikyo !== undefined && !Array.isArray(parsed.today.gaikyo)) {
+      throw new Error(`Unexpected gaikyo shape for target "${targetId}" — API structure may have changed.`);
     }
-
-    // Pick the first non-empty gaikyo entry only when this route is disrupted,
-    // to avoid attaching area-wide disruption text to a normal-status route.
-    const gaikyoArray = Array.isArray(json.today?.gaikyo) ? json.today.gaikyo : [];
-    const gaikyoEntry = status === 1
-      ? gaikyoArray.find(
-          (g) => g != null && typeof g === "object" && typeof g.honbun === "string" && g.honbun.trim() !== "",
-        )
-      : undefined;
-    let description: string;
-    if (gaikyoEntry) {
-      description = `エリア概況: ${gaikyoEntry.honbun}`;
-    } else if (status === 1) {
-      description = "詳細情報は公式サイトでご確認ください。";
-    } else {
-      description = "現在、遅れに関する情報はありません。";
+    for (const [key, value] of Object.entries(senkuStatus)) {
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        throw new Error(`Unexpected senkuStatus value for "${key}" (target "${targetId}") — API structure may have changed.`);
+      }
     }
 
     return {
-      target,
-      status,
-      description,
-      updatedAt: typeof json.time === "string" && json.time.trim() !== "" ? json.time : "時刻不明",
+      ...(typeof parsed.time === "string" ? { time: parsed.time } : {}),
+      today: {
+        senkuStatus: senkuStatus as Record<string, number>,
+        gaikyo: Array.isArray(parsed.today.gaikyo) ? parsed.today.gaikyo : [],
+      },
     };
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+function buildResult(target: WatchTarget, json: AreaJson): ScrapeResult {
+  const rawStatus = json.today.senkuStatus[target.senkuKey];
+  if (rawStatus === undefined) {
+    throw new Error(`senkuKey "${target.senkuKey}" not found in senkuStatus for target "${target.id}". API structure may have changed.`);
+  }
+
+  let status: RouteStatus;
+  if (rawStatus === 0) {
+    status = 0;
+  } else if (rawStatus === 1) {
+    status = 1;
+  } else {
+    // Fail-safe: treat any unknown numeric code as DISRUPTED to avoid missing real disruptions.
+    console.warn(`[jr-delay-notify] Unexpected senkuStatus value ${rawStatus} for target "${target.id}" — treating as DISRUPTED.`);
+    status = 1;
+  }
+
+  const gaikyoEntry = status === 1
+    ? json.today.gaikyo.find((entry) => isRecord(entry) && typeof entry.honbun === "string" && entry.honbun.trim() !== "")
+    : undefined;
+  const description = gaikyoEntry && isRecord(gaikyoEntry)
+    ? `エリア概況: ${gaikyoEntry.honbun as string}`
+    : status === 1
+      ? "詳細情報は公式サイトでご確認ください。"
+      : "現在、遅れに関する情報はありません。";
+
+  return {
+    target,
+    status,
+    description,
+    updatedAt: typeof json.time === "string" && json.time.trim() !== "" ? json.time : "時刻不明",
+  };
+}
+
+/**
+ * Creates a scraper scoped to one Worker invocation. Targets sharing an area
+ * reuse the same in-flight response, while separate invocations always fetch
+ * fresh data.
+ */
+export function createTargetScraper(): (target: WatchTarget) => Promise<ScrapeResult> {
+  const areaRequests = new Map<string, Promise<AreaJson>>();
+
+  return async (target) => {
+    const url = AREA_ENDPOINTS[target.areaKey];
+    if (!url) {
+      throw new Error(`Unknown areaKey: ${target.areaKey}`);
+    }
+
+    let areaRequest = areaRequests.get(url);
+    if (!areaRequest) {
+      areaRequest = fetchAreaJson(url, target.id);
+      areaRequests.set(url, areaRequest);
+    }
+    return buildResult(target, await areaRequest);
+  };
+}
+
+/** Fetches and parses one target without sharing an area response. */
+export async function scrapeTarget(target: WatchTarget): Promise<ScrapeResult> {
+  return createTargetScraper()(target);
 }

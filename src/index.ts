@@ -1,6 +1,6 @@
 import { DEFAULT_TARGETS, RouteStatus, STATUS, StoredState, WatchTarget } from "./config";
 import { buildNotificationText } from "./message";
-import { scrapeTarget } from "./scraper";
+import { createTargetScraper, type ScrapeResult } from "./scraper";
 import { readState, shouldNotify, writeState } from "./state";
 import { LineRateLimitError, sendLineMessage } from "./line";
 
@@ -21,8 +21,9 @@ async function processTarget(
   target: WatchTarget,
   env: Env,
   notifyOnRecovery: boolean,
+  scrape: (target: WatchTarget) => Promise<ScrapeResult>,
 ): Promise<TargetResult> {
-  const result = await scrapeTarget(target);
+  const result = await scrape(target);
   const previous = await readState(env.JR_STATE, target.id);
   const notify = shouldNotify(previous, result.status);
 
@@ -193,9 +194,10 @@ async function handleErrorAlert(env: Env, failedTargets: FailedTarget[]): Promis
 export default {
   async scheduled(_event: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     const notifyOnRecovery = isRecoveryEnabled(env);
+    const scrape = createTargetScraper();
 
     const settled = await Promise.allSettled(
-      DEFAULT_TARGETS.map((target) => processTarget(target, env, notifyOnRecovery)),
+      DEFAULT_TARGETS.map((target) => processTarget(target, env, notifyOnRecovery, scrape)),
     );
 
     const failedTargets = settled.flatMap((r, i) =>
@@ -241,8 +243,9 @@ export default {
       // Note: each /check call may trigger live LINE broadcasts — use sparingly to avoid
       // exhausting the monthly free-tier broadcast quota (200 msgs/mo).
       const notifyOnRecovery = isRecoveryEnabled(env);
+      const scrape = createTargetScraper();
       const settled = await Promise.allSettled(
-        DEFAULT_TARGETS.map((target) => processTarget(target, env, notifyOnRecovery)),
+        DEFAULT_TARGETS.map((target) => processTarget(target, env, notifyOnRecovery, scrape)),
       );
 
       const results: TargetResult[] = settled.map((r, i) => {
