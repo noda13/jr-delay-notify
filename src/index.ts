@@ -12,6 +12,8 @@ interface TargetResult {
   notified: boolean;
   /** true when a wanted notification could not be delivered (send error or missing token) */
   sendFailed: boolean;
+  /** dry run only: whether a normal /check would have tried to send a notification */
+  wouldNotify?: boolean;
 }
 
 // scrapeTarget (fetch non-2xx, JSON parse, unknown senkuKey) and readState (KV.get) can throw.
@@ -22,6 +24,7 @@ async function processTarget(
   env: Env,
   notifyOnRecovery: boolean,
   scrape: (target: WatchTarget) => Promise<ScrapeResult>,
+  dryRun = false,
 ): Promise<TargetResult> {
   const result = await scrape(target);
   const previous = await readState(env.JR_STATE, target.id);
@@ -31,6 +34,17 @@ async function processTarget(
   let lineFailed = false;
   let sendFailed = false;
   const sendWanted = notify && !(result.status === STATUS.NORMAL && !notifyOnRecovery);
+  if (dryRun) {
+    return {
+      id: target.id,
+      label: target.label,
+      status: result.status,
+      description: result.description,
+      notified: false,
+      sendFailed: false,
+      wouldNotify: sendWanted,
+    };
+  }
   if (sendWanted) {
     if (!env.LINE_CHANNEL_ACCESS_TOKEN) {
       console.error(`[jr-delay-notify] LINE_CHANNEL_ACCESS_TOKEN is absent — notification skipped for ${target.id}. Check wrangler secrets.`);
@@ -242,10 +256,13 @@ export default {
       // handler only. A manual /check during an outage will not suppress or trigger error alerts.
       // Note: each /check call may trigger live LINE broadcasts — use sparingly to avoid
       // exhausting the monthly free-tier broadcast quota (200 msgs/mo).
+      // Dry run (?dry=1) stops before any LINE send or KV write, so it is safe for production
+      // checks that must not consume the broadcast quota.
+      const dryRun = url.searchParams.get("dry") === "1";
       const notifyOnRecovery = isRecoveryEnabled(env);
       const scrape = createTargetScraper();
       const settled = await Promise.allSettled(
-        DEFAULT_TARGETS.map((target) => processTarget(target, env, notifyOnRecovery, scrape)),
+        DEFAULT_TARGETS.map((target) => processTarget(target, env, notifyOnRecovery, scrape, dryRun)),
       );
 
       const results: TargetResult[] = settled.map((r, i) => {
@@ -258,10 +275,11 @@ export default {
           description: "internal error",
           notified: false,
           sendFailed: false,
+          ...(dryRun ? { wouldNotify: false } : {}),
         };
       });
 
-      return Response.json({ ok: true, results });
+      return Response.json(dryRun ? { ok: true, dryRun: true, results } : { ok: true, results });
     }
 
     if (url.pathname === "/" || url.pathname === "/health") {
