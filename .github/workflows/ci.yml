@@ -1,6 +1,10 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -8,7 +12,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # main への push run は途中で打ち切ると最新コミットの結果が欠けるため、PR の古い run だけ取り消す
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
