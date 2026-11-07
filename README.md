@@ -145,6 +145,7 @@ LINE の失敗が分かるのは通知を送る場面（状態変化時や再送
 |---|---|
 | `GET /` または `/health` | 死活確認 |
 | `GET /check` | 手動トリガー（要 `X-Check-Secret` ヘッダー）。LINE 通知が発火するため月200件の無料枠に注意 |
+| `GET /check?dry=1` | 通知と KV 書き込みをせず、判定結果だけ返す。本番確認はこちらを使うと LINE の無料枠を消費しない（要 `X-Check-Secret` ヘッダー） |
 
 ### /check レスポンス例
 
@@ -153,6 +154,20 @@ LINE の失敗が分かるのは通知を送る場面（状態変化時や再送
   "ok": true,
   "results": [
     { "id": "hakodate-sapporo", "label": "函館・千歳線（札幌近郊）", "status": 0, "description": "現在、遅れに関する情報はありません。", "notified": false }
+  ]
+}
+```
+
+### /check?dry=1 レスポンス例
+
+`wouldNotify` は、通常の `/check` なら通知を送ろうとするかどうかを表す。`notified` は常に `false`。
+
+```json
+{
+  "ok": true,
+  "dryRun": true,
+  "results": [
+    { "id": "hakodate-sapporo", "label": "函館・千歳線（札幌近郊）", "status": 1, "description": "函館本線で遅延が発生しています。", "notified": false, "sendFailed": false, "wouldNotify": true }
   ]
 }
 ```

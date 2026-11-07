@@ -934,3 +934,226 @@ describe("review fixes 2", () => {
 		).toBe(false);
 	});
 });
+
+describe("fetch handler /check?dry=1", () => {
+	type DryBody = {
+		ok: boolean;
+		dryRun?: boolean;
+		results: Array<{
+			id: string;
+			status: number;
+			notified: boolean;
+			sendFailed: boolean;
+			wouldNotify?: boolean;
+		}>;
+	};
+
+	const KEYS = ["state:hakodate-sapporo", "state:spo-airport"];
+
+	async function seed(status: number) {
+		for (const key of KEYS) {
+			await env.JR_STATE.put(
+				key,
+				JSON.stringify({
+					status,
+					notifiedAt: "2024-01-01T00:00:00.000Z",
+					description: "seeded",
+				}),
+			);
+		}
+	}
+
+	async function readRaw() {
+		return Promise.all(KEYS.map((k) => env.JR_STATE.get(k)));
+	}
+
+	function stubJr(senkuStatus: Record<string, number>) {
+		const mockFetch = vi.fn().mockImplementation((url: string) => {
+			if (String(url).includes("jrhokkaido")) {
+				return Promise.resolve(
+					makeJrApiResponse(senkuStatus, [
+						{ time: "10:00", title: "運転状況", honbun: "遅延が発生しています。" },
+					]),
+				);
+			}
+			return Promise.resolve(makeLineApiResponse());
+		});
+		vi.stubGlobal("fetch", mockFetch);
+		return mockFetch;
+	}
+
+	function lineCalls(mockFetch: ReturnType<typeof vi.fn>) {
+		return mockFetch.mock.calls.filter(
+			([url]) => !String(url).includes("jrhokkaido"),
+		);
+	}
+
+	async function check(query: string, extraEnv: Record<string, string> = {}, secret = "test-secret") {
+		const testEnv = {
+			...env,
+			CHECK_SECRET: "test-secret",
+			LINE_CHANNEL_ACCESS_TOKEN: "fake-token",
+			...extraEnv,
+		} as typeof env;
+		const headers: Record<string, string> = {};
+		if (secret) headers["X-Check-Secret"] = secret;
+		const request = new IncomingRequest(`http://example.com/check${query}`, {
+			headers,
+		});
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, testEnv, ctx);
+		await waitOnExecutionContext(ctx);
+		return response;
+	}
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("NORMAL→DISRUPTED with dry=1: no LINE call, KV unchanged, dryRun=true and wouldNotify=true", async () => {
+		await seed(0);
+		const before = await readRaw();
+		const mockFetch = stubJr({ hakochise: 1, airport: 0 });
+
+		const response = await check("?dry=1");
+
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as DryBody;
+		expect(body.ok).toBe(true);
+		expect(body.dryRun).toBe(true);
+		const disrupted = body.results.find((r) => r.id === "hakodate-sapporo");
+		expect(disrupted?.status).toBe(1);
+		expect(disrupted?.wouldNotify).toBe(true);
+		expect(disrupted?.notified).toBe(false);
+		expect(disrupted?.sendFailed).toBe(false);
+		const normal = body.results.find((r) => r.id === "spo-airport");
+		expect(normal?.wouldNotify).toBe(false);
+		expect(lineCalls(mockFetch)).toHaveLength(0);
+		expect(await readRaw()).toEqual(before);
+	});
+
+	it("dry=1 does not write KV on the first run (no prior state)", async () => {
+		const mockFetch = stubJr({ hakochise: 0, airport: 0 });
+
+		const response = await check("?dry=1");
+
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as DryBody;
+		expect(body.results.every((r) => r.wouldNotify === false)).toBe(true);
+		expect(lineCalls(mockFetch)).toHaveLength(0);
+		expect(await readRaw()).toEqual([null, null]);
+	});
+
+	it("no state change with dry=1: wouldNotify=false", async () => {
+		await seed(0);
+		stubJr({ hakochise: 0, airport: 0 });
+
+		const response = await check("?dry=1");
+
+		const body = (await response.json()) as DryBody;
+		expect(body.dryRun).toBe(true);
+		expect(body.results).toHaveLength(2);
+		for (const r of body.results) {
+			expect(r.wouldNotify).toBe(false);
+			expect(r.notified).toBe(false);
+		}
+	});
+
+	it("recovery with NOTIFY_ON_RECOVERY=false and dry=1: wouldNotify=false", async () => {
+		await seed(1);
+		const before = await readRaw();
+		const mockFetch = stubJr({ hakochise: 0, airport: 0 });
+
+		const response = await check("?dry=1", { NOTIFY_ON_RECOVERY: "false" });
+
+		const body = (await response.json()) as DryBody;
+		for (const r of body.results) {
+			expect(r.status).toBe(0);
+			expect(r.wouldNotify).toBe(false);
+		}
+		expect(lineCalls(mockFetch)).toHaveLength(0);
+		expect(await readRaw()).toEqual(before);
+	});
+
+	it("recovery with NOTIFY_ON_RECOVERY=true and dry=1: wouldNotify=true without sending", async () => {
+		await seed(1);
+		const mockFetch = stubJr({ hakochise: 0, airport: 0 });
+
+		const response = await check("?dry=1", { NOTIFY_ON_RECOVERY: "true" });
+
+		const body = (await response.json()) as DryBody;
+		for (const r of body.results) {
+			expect(r.wouldNotify).toBe(true);
+			expect(r.notified).toBe(false);
+		}
+		expect(lineCalls(mockFetch)).toHaveLength(0);
+	});
+
+	it.each(["?dry=0", "?dry=true", "?dry="])(
+		"%s behaves like a normal /check: notification is sent, no dryRun/wouldNotify in response",
+		async (query) => {
+			await seed(0);
+			const mockFetch = stubJr({ hakochise: 1, airport: 0 });
+
+			const response = await check(query);
+
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as DryBody;
+			expect(body.ok).toBe(true);
+			expect("dryRun" in body).toBe(false);
+			for (const r of body.results) {
+				expect("wouldNotify" in r).toBe(false);
+			}
+			const disrupted = body.results.find((r) => r.id === "hakodate-sapporo");
+			expect(disrupted?.notified).toBe(true);
+			expect(lineCalls(mockFetch)).toHaveLength(1);
+		},
+	);
+
+	it("dry=1 without X-Check-Secret returns 403 and does not scrape", async () => {
+		const mockFetch = stubJr({ hakochise: 1, airport: 0 });
+
+		const response = await check("?dry=1", {}, "");
+
+		expect(response.status).toBe(403);
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	it("dry=1 with a wrong secret returns 403", async () => {
+		const mockFetch = stubJr({ hakochise: 1, airport: 0 });
+
+		const response = await check("?dry=1", {}, "wrong");
+
+		expect(response.status).toBe(403);
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	it("dry=1 reports status -1 / wouldNotify=false when the scrape fails", async () => {
+		await seed(0);
+		const before = await readRaw();
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		const mockFetch = vi.fn().mockResolvedValue({
+			ok: false,
+			status: 500,
+			statusText: "Internal Server Error",
+			text: () => Promise.resolve(""),
+		});
+		vi.stubGlobal("fetch", mockFetch);
+
+		const response = await check("?dry=1");
+
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as DryBody & {
+			results: Array<{ description: string }>;
+		};
+		expect(body.dryRun).toBe(true);
+		for (const r of body.results) {
+			expect(r.status).toBe(-1);
+			expect(r.description).toBe("internal error");
+			expect(r.wouldNotify).toBe(false);
+			expect(r.notified).toBe(false);
+			expect(r.sendFailed).toBe(false);
+		}
+		expect(await readRaw()).toEqual(before);
+	});
+});
