@@ -65,7 +65,7 @@ pnpm exec wrangler secret put HEARTBEAT_URL  # 死活監視用 ping URL（任意
 pnpm run deploy
 ```
 
-デプロイは手動のみ（`pnpm run deploy`）。GitHub Actions の CI は Actions の使用量を抑えるため手動実行（`workflow_dispatch`）で、型チェック・テスト・`wrangler deploy --dry-run` によるビルド確認を行う。
+デプロイは手動のみ（`pnpm run deploy`）。GitHub Actions の CI は main への push と PR で自動実行され（手動実行も可）、型チェック・テスト・`wrangler deploy --dry-run` によるビルド確認を行う。
 
 ### ローカル開発
 
@@ -98,7 +98,7 @@ pnpm run typecheck # TypeScript 型チェック
 pnpm run check   # 型チェック → テスト → wrangler deploy --dry-run
 ```
 
-CI は手動実行のため、push 前にローカルで `pnpm run check` を実行する。
+CI と同じ内容をローカルで実行できる。push 前に流しておくと CI の失敗を避けられる。
 
 ### cron のローカル確認
 
